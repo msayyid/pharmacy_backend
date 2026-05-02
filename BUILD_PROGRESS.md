@@ -5,12 +5,11 @@
 
 ## Current state
 
-- **Active phase:** Phase 5 — Catalog Domain & Admin Catalog API
-- **Status:** **in progress — foundation done, services + routes + tests + fixtures still ahead**
+- **Active phase:** Phase 5 — Catalog Domain & Admin Catalog API _(complete)_
+- **Status:** **complete** — 224 tests pass; mypy --strict clean across 70 source files.
 - **Last session:** 2026-05-02
-- **Sub-phases done:** 5.1 (models + migration), 5.2 (repositories), 5.3 (schemas + slug + audit service).
-- **Sub-phases remaining:** 5.4 (catalog admin services for the simpler aggregates), 5.5 (product/image/import services), 5.6 (5 admin route modules), 5.7 (~10 test files), 5.8 (dev fixtures + hand-off).
-- **Next session should:** start at 5.4. Re-read `PRODUCT §5, §8.5, §13`, `BACKEND §11.2, §12.2, §13.4`, and the bulk-import column contract below. Resume planning is unchanged from the original Phase 5 plan in CHANGELOG entry "Phase 5 (in progress)."
+- **Sub-phases done:** 5.1 (models + migration), 5.2 (repositories), 5.3 (schemas + slug + audit service), 5.4 (catalog admin service), 5.5 (product/image/import services), 5.6 (5 admin route modules + router include), 5.7 (10 test files: 2 integration + 3 unit + 3 e2e + factories), 5.8 (dev fixtures + seed script).
+- **Next session should:** start Phase 6 — Inventory Domain & Admin Inventory API. Re-read `PHARMACY §5.5–5.7, §6`, `PRODUCT §6, §13.2`, `BACKEND §11.3, §12.3, §13.5`. Catalog admin endpoints exist now and may need a minimal `Branch` admin module to coexist with inventory.
 
 ## Phases
 
@@ -19,7 +18,7 @@
 - [x] Phase 2 — Database Foundation & Alembic _(done 2026-05-02)_
 - [x] Phase 3 — Core Infrastructure _(done 2026-05-02)_
 - [x] Phase 4 — Identity & Authentication _(done 2026-05-02)_
-- [~] Phase 5 — Catalog Domain & Admin Catalog API _(in progress 2026-05-02; 5.1–5.3 done)_
+- [x] Phase 5 — Catalog Domain & Admin Catalog API _(done 2026-05-02)_
 - [ ] Phase 6 — Inventory Domain & Admin Inventory API
 - [ ] Phase 7 — Customer Discovery (Browse & Search)
 - [ ] Phase 8 — Cart, Checkout & Place-Order (FEFO)

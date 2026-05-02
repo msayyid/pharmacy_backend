@@ -17,7 +17,7 @@ from decimal import Decimal
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ─── Manufacturers ───────────────────────────────────────────────────────────
 
@@ -372,6 +372,50 @@ class ProductRead(BaseModel):
 
     created_at: datetime
     updated_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_product_orm(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return value
+        # ``Product.symptoms`` is a list of ``ProductSymptom`` join rows; the
+        # response shape exposes plain ``symptom_ids``. Pull them off here so
+        # callers can pass the ORM model directly.
+        if hasattr(value, "symptoms"):
+            return {
+                "symptom_ids": [ps.symptom_id for ps in value.symptoms],
+                **{
+                    f: getattr(value, f)
+                    for f in (
+                        "id",
+                        "sku",
+                        "barcode",
+                        "slug",
+                        "manufacturer_id",
+                        "category_id",
+                        "form",
+                        "pack_size_label",
+                        "pack_quantity",
+                        "pack_unit",
+                        "requires_prescription",
+                        "min_age",
+                        "max_per_order",
+                        "storage_temp_min_c",
+                        "storage_temp_max_c",
+                        "requires_cold_chain",
+                        "weight_grams",
+                        "attributes",
+                        "is_active",
+                        "is_featured",
+                        "translations",
+                        "images",
+                        "active_ingredients",
+                        "created_at",
+                        "updated_at",
+                    )
+                },
+            }
+        return value
 
 
 class ProductListItem(BaseModel):

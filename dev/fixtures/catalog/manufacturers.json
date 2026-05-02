@@ -1,0 +1,9 @@
+[
+  {"name": "Bayer AG", "country_code": "DE", "website": "https://www.bayer.com"},
+  {"name": "Pfizer Inc.", "country_code": "US", "website": "https://www.pfizer.com"},
+  {"name": "Roche Holding AG", "country_code": "CH", "website": "https://www.roche.com"},
+  {"name": "Novartis AG", "country_code": "CH", "website": "https://www.novartis.com"},
+  {"name": "Servier Laboratories", "country_code": "FR", "website": "https://servier.com"},
+  {"name": "Gedeon Richter", "country_code": "HU", "website": "https://www.gedeonrichter.com"},
+  {"name": "Hemofarm", "country_code": "RS", "website": "https://www.hemofarm.com"}
+]

@@ -1,0 +1,38 @@
+[
+  {
+    "inn_name": "paracetamol",
+    "translations": [
+      {"language_code": "ru", "name": "Парацетамол", "synonyms": ["Ацетаминофен"]},
+      {"language_code": "ky", "name": "Парацетамол", "synonyms": []},
+      {"language_code": "en", "name": "Paracetamol", "synonyms": ["Acetaminophen"]}
+    ]
+  },
+  {
+    "inn_name": "ibuprofen",
+    "translations": [
+      {"language_code": "ru", "name": "Ибупрофен", "synonyms": []},
+      {"language_code": "en", "name": "Ibuprofen", "synonyms": []}
+    ]
+  },
+  {
+    "inn_name": "acetylsalicylic-acid",
+    "translations": [
+      {"language_code": "ru", "name": "Ацетилсалициловая кислота", "synonyms": ["Аспирин"]},
+      {"language_code": "en", "name": "Acetylsalicylic acid", "synonyms": ["Aspirin"]}
+    ]
+  },
+  {
+    "inn_name": "ascorbic-acid",
+    "translations": [
+      {"language_code": "ru", "name": "Аскорбиновая кислота", "synonyms": ["Витамин C"]},
+      {"language_code": "en", "name": "Ascorbic acid", "synonyms": ["Vitamin C"]}
+    ]
+  },
+  {
+    "inn_name": "omeprazole",
+    "translations": [
+      {"language_code": "ru", "name": "Омепразол", "synonyms": []},
+      {"language_code": "en", "name": "Omeprazole", "synonyms": []}
+    ]
+  }
+]

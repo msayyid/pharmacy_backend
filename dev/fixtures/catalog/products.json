@@ -1,0 +1,113 @@
+[
+  {
+    "sku": "PAR-500-20",
+    "manufacturer_name": "Bayer AG",
+    "category_slug": "pain-relief",
+    "form": "tablet",
+    "pack_size_label": "20 tablets",
+    "pack_quantity": "20",
+    "pack_unit": "tab",
+    "requires_prescription": false,
+    "is_active": true,
+    "is_featured": true,
+    "translations": [
+      {
+        "language_code": "ru",
+        "name": "Парацетамол 500 мг",
+        "short_description": "Жаропонижающее и обезболивающее средство",
+        "description": "Применяется при головной боли, повышенной температуре, мышечных болях."
+      },
+      {
+        "language_code": "en",
+        "name": "Paracetamol 500 mg",
+        "short_description": "Antipyretic and analgesic"
+      }
+    ],
+    "active_ingredients": [
+      {"inn_name": "paracetamol", "dosage_amount": "500.000", "dosage_unit": "mg"}
+    ],
+    "symptom_slugs": ["headache", "fever", "muscle-pain"]
+  },
+  {
+    "sku": "IBU-200-30",
+    "manufacturer_name": "Pfizer Inc.",
+    "category_slug": "pain-relief",
+    "form": "tablet",
+    "pack_size_label": "30 tablets",
+    "requires_prescription": false,
+    "is_active": true,
+    "is_featured": true,
+    "translations": [
+      {
+        "language_code": "ru",
+        "name": "Ибупрофен 200 мг",
+        "short_description": "Противовоспалительное и обезболивающее"
+      },
+      {"language_code": "en", "name": "Ibuprofen 200 mg"}
+    ],
+    "active_ingredients": [
+      {"inn_name": "ibuprofen", "dosage_amount": "200.000", "dosage_unit": "mg"}
+    ],
+    "symptom_slugs": ["headache", "muscle-pain"]
+  },
+  {
+    "sku": "ASP-500-10",
+    "manufacturer_name": "Bayer AG",
+    "category_slug": "pain-relief",
+    "form": "tablet",
+    "pack_size_label": "10 tablets",
+    "requires_prescription": false,
+    "is_active": true,
+    "translations": [
+      {"language_code": "ru", "name": "Аспирин 500 мг"},
+      {"language_code": "en", "name": "Aspirin 500 mg"}
+    ],
+    "active_ingredients": [
+      {"inn_name": "acetylsalicylic-acid", "dosage_amount": "500.000", "dosage_unit": "mg"}
+    ],
+    "symptom_slugs": ["headache", "fever"]
+  },
+  {
+    "sku": "VIT-C-1000",
+    "manufacturer_name": "Roche Holding AG",
+    "category_slug": "vitamin-c-products",
+    "form": "tablet",
+    "pack_size_label": "60 effervescent tablets",
+    "requires_prescription": false,
+    "is_active": true,
+    "is_featured": true,
+    "translations": [
+      {
+        "language_code": "ru",
+        "name": "Витамин C 1000 мг",
+        "short_description": "Шипучие таблетки"
+      },
+      {"language_code": "en", "name": "Vitamin C 1000 mg"}
+    ],
+    "active_ingredients": [
+      {"inn_name": "ascorbic-acid", "dosage_amount": "1000.000", "dosage_unit": "mg"}
+    ],
+    "symptom_slugs": ["cold"]
+  },
+  {
+    "sku": "OME-20-14",
+    "manufacturer_name": "Hemofarm",
+    "category_slug": "cardio",
+    "form": "capsule",
+    "pack_size_label": "14 capsules",
+    "requires_prescription": false,
+    "is_active": true,
+    "translations": [
+      {
+        "language_code": "ru",
+        "name": "Омепразол 20 мг",
+        "short_description": "При повышенной кислотности"
+      },
+      {"language_code": "en", "name": "Omeprazole 20 mg"}
+    ],
+    "active_ingredients": [
+      {"inn_name": "omeprazole", "dosage_amount": "20.000", "dosage_unit": "mg"}
+    ],
+    "symptom_slugs": ["heartburn"]
+  }
+]

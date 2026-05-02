@@ -13,8 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project initialised; specs and master plan in place.
 - `BUILD_PLAN.md`, `BUILD_PROGRESS.md`, `OPEN_QUESTIONS.md` (12 substantive items), `RISKS.md` (top-10 ranked + watching list), `DECISION_LOG.md` template, this file.
 
-#### Phase 5 (in progress) — Catalog foundation (2026-05-02)
-*Sub-phases 5.1–5.3 complete; services + routes + tests + fixtures still ahead.*
+#### Phase 5 — Catalog foundation (2026-05-02) — complete
 
 - **13 catalog/ops tables** in `app/domain/catalog/models.py` and `app/domain/ops/models.py`: `manufacturers`, `active_ingredients` + `active_ingredient_translations`, `categories` + `category_translations`, `symptoms` + `symptom_translations`, `products` + `product_translations` + `product_images`, `product_active_ingredients` (M:N with dosage), `product_symptoms` (M:N), `admin_audit_log`.
 - **Migration `5b872d07a987 — create catalog and audit log`:**
@@ -29,7 +28,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`AdminAuditLogService`** (`app/domain/ops/services.py`) — single helper Phase 5.4+ services use for every mutation.
 - **New dep:** `python-slugify[unidecode]>=8.0,<9.0`.
 - **Bulk-import CSV column contract locked** in `BUILD_PROGRESS.md`.
-- 170 tests still pass; ruff + mypy --strict clean across 61 source files.
+- **`CatalogAdminService`** (`app/domain/catalog/services.py`) — CRUD for the 4 simpler aggregates (manufacturers, ingredients, categories, symptoms) with audit per mutation; `has_active_products` / `has_children` guards on delete; soft-delete via `deleted_at` for categories; replace-semantics on translations on update.
+- **`ProductService`** (`app/domain/catalog/products.py`) — atomic `create_product` (translations + ingredients + symptoms in one flush), `update_product` (replace M:N), `soft_delete_product`, `upsert_from_import` returning `(product, created)`.
+- **`ProductImageService`** (`app/domain/catalog/images.py`) — synchronous Pillow resize → 4 WebP variants (thumbnail 200, medium 600, large 1200, original capped 2400); EXIF stripped; storage under `IMAGE_STORAGE_DIR/products/<uuid>/<token>/<variant>.webp`; `is_primary` toggle clears other primaries first to honour the generated-column UNIQUE; allowed MIMEs `image/{jpeg,png,webp}`; size cap from `IMAGE_MAX_BYTES` (default 10 MiB).
+- **`ProductImportService`** (`app/domain/catalog/import_csv.py`) — CSV-only ≤ 500 rows synchronous; `dry_run` parses + validates references and reports `BulkImportSummary`; `apply` upserts by SKU; ingredient triples `Name:DOSE:UNIT`, semicolon-separated symptom slugs, slash-delimited category paths.
+- **5 admin routers** under `/api/admin/v1`: `manufacturers`, `active-ingredients`, `categories`, `symptoms`, `products` (CRUD + `/{id}/images` upload + `/products/import/{dry-run,apply}`); RBAC via `require_role("super_admin", "content_editor")`; audit fields (IP, user-agent) captured from `Request`.
+- **DI factories** added to `app/api/deps.py` for all catalog repos + services + audit.
+- **`Settings`**: `image_storage_dir`, `image_public_base_url`, `image_max_bytes`.
+- **Test factories** (`tests/factories/catalog.py`) — in-session and committed seeders for manufacturers, categories, ingredients, symptoms, products.
+- **54 new tests (224 total)**:
+    - Integration: `test_catalog_repos.py` (10 — manufacturer/symptom/category list_paginated, product slug + sku uniqueness, generated-column UNIQUE on `product_images.primary_product_id`, `get_by_id_with_full` relationship loading, soft-delete excluded from list); `test_fulltext.py` (2 — index name + `WITH PARSER ngram` smoke via INFORMATION_SCHEMA / SHOW CREATE TABLE).
+    - Unit: `test_slug_service.py` (8 — Cyrillic transliteration, hyphenation, collision counter); `test_catalog_service.py` (10 — service-level rules: duplicate-name conflict, has-products guard on delete, replace-translations, auto-slug from translation, has-children guard, slug increment); `test_product_import.py` (8 — dry-run vs apply counts, row errors, abort on errors, max_rows guard, nested category path, manufacturer not found, ingredient + symptom resolution).
+    - E2E: `test_catalog_admin.py` (10 — RBAC: branch_manager forbidden; CRUD on the 5 aggregates; duplicate SKU 409; soft-delete invisible to GET); `test_product_import.py` (3 — multipart CSV dry-run + apply + error reporting); `test_product_images.py` (4 — Pillow PNG upload, primary toggle clears prior primary, delete, invalid content-type 400).
+- **`ProductRead`** uses `model_validator(mode="before")` to expose `symptom_ids` from the ORM `symptoms` relationship.
+- **Dev fixtures** under `dev/fixtures/catalog/` — `manufacturers.json` (7), `categories.json` (6 incl. nested), `ingredients.json` (5), `symptoms.json` (5), `products.json` (5); idempotent `seed.py` (`uv run python -m dev.fixtures.catalog.seed`).
+- 224 tests pass; ruff + mypy --strict clean across 70 source files.
 
 #### Phase 4 — Identity & Authentication (2026-05-02)
 - **Domain:** identity (`User`, `UserAddress`, `OtpCode`, `AdminUser`, `AdminSession`) + minimal `Branch` model (Phase 6 expands inventory).

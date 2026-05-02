@@ -1,0 +1,45 @@
+[
+  {
+    "slug": "headache",
+    "sort_order": 10,
+    "translations": [
+      {"language_code": "ru", "name": "Головная боль", "synonyms": ["Мигрень"]},
+      {"language_code": "ky", "name": "Баш ооруу", "synonyms": []},
+      {"language_code": "en", "name": "Headache", "synonyms": ["Migraine"]}
+    ]
+  },
+  {
+    "slug": "fever",
+    "sort_order": 20,
+    "translations": [
+      {"language_code": "ru", "name": "Высокая температура", "synonyms": ["Жар"]},
+      {"language_code": "ky", "name": "Жогорку температура", "synonyms": []},
+      {"language_code": "en", "name": "Fever", "synonyms": []}
+    ]
+  },
+  {
+    "slug": "cold",
+    "sort_order": 30,
+    "translations": [
+      {"language_code": "ru", "name": "Простуда", "synonyms": ["ОРВИ"]},
+      {"language_code": "ky", "name": "Сууктоо", "synonyms": []},
+      {"language_code": "en", "name": "Cold", "synonyms": []}
+    ]
+  },
+  {
+    "slug": "muscle-pain",
+    "sort_order": 40,
+    "translations": [
+      {"language_code": "ru", "name": "Мышечная боль", "synonyms": []},
+      {"language_code": "en", "name": "Muscle pain", "synonyms": []}
+    ]
+  },
+  {
+    "slug": "heartburn",
+    "sort_order": 50,
+    "translations": [
+      {"language_code": "ru", "name": "Изжога", "synonyms": []},
+      {"language_code": "en", "name": "Heartburn", "synonyms": []}
+    ]
+  }
+]

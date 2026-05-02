@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     storage_secret_key: SecretStr | None = None
     storage_public_base_url: AnyHttpUrl | None = None
 
+    # ─── Image pipeline (Phase 5 — local disk; Phase 11 wires R2) ────────────
+    image_storage_dir: str = "dev/images"
+    image_public_base_url: str = "/static/images"
+    image_max_bytes: int = 10 * 1024 * 1024  # 10 MB per F-ADM-CAT-002
+
     sentry_dsn: SecretStr | None = None
 
     # ─── CORS ─────────────────────────────────────────────────────────────────

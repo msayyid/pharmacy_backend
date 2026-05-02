@@ -12,6 +12,7 @@ Reference: BACKEND_BLUEPRINT.md §13.2.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, Header
@@ -23,6 +24,17 @@ from app.core.db import get_db
 from app.core.i18n import resolve_language
 from app.core.redis import get_redis
 from app.core.security import TokenIssuer
+from app.domain.catalog.images import ProductImageService
+from app.domain.catalog.import_csv import ProductImportService
+from app.domain.catalog.products import ProductService
+from app.domain.catalog.repositories import (
+    ActiveIngredientRepository,
+    CategoryRepository,
+    ManufacturerRepository,
+    ProductRepository,
+    SymptomRepository,
+)
+from app.domain.catalog.services import CatalogAdminService
 from app.domain.identity.repositories import (
     AdminSessionRepository,
     AdminUserRepository,
@@ -37,6 +49,8 @@ from app.domain.identity.services import (
     OtpService,
 )
 from app.domain.inventory.repositories import BranchRepository
+from app.domain.ops.repositories import AdminAuditLogRepository
+from app.domain.ops.services import AdminAuditLogService
 from app.integrations.sms.base import get_sms_queue
 
 # ─── Type aliases ─────────────────────────────────────────────────────────────
@@ -90,6 +104,38 @@ def get_branch_repository(session: DbSession) -> BranchRepository:
     return BranchRepository(session)
 
 
+def get_manufacturer_repository(session: DbSession) -> ManufacturerRepository:
+    return ManufacturerRepository(session)
+
+
+def get_active_ingredient_repository(
+    session: DbSession,
+) -> ActiveIngredientRepository:
+    return ActiveIngredientRepository(session)
+
+
+def get_category_repository(session: DbSession) -> CategoryRepository:
+    return CategoryRepository(session)
+
+
+def get_symptom_repository(session: DbSession) -> SymptomRepository:
+    return SymptomRepository(session)
+
+
+def get_product_repository(session: DbSession) -> ProductRepository:
+    return ProductRepository(session)
+
+
+def get_admin_audit_repository(session: DbSession) -> AdminAuditLogRepository:
+    return AdminAuditLogRepository(session)
+
+
+def get_admin_audit_service(
+    repo: Annotated[AdminAuditLogRepository, Depends(get_admin_audit_repository)],
+) -> AdminAuditLogService:
+    return AdminAuditLogService(repo)
+
+
 # ─── Service factories ───────────────────────────────────────────────────────
 
 
@@ -137,3 +183,69 @@ def get_admin_auth_service(
     sessions: Annotated[AdminSessionRepository, Depends(get_admin_session_repository)],
 ) -> AdminAuthService:
     return AdminAuthService(settings=settings, admins=admins, sessions=sessions)
+
+
+def get_catalog_admin_service(
+    manufacturers: Annotated[ManufacturerRepository, Depends(get_manufacturer_repository)],
+    ingredients: Annotated[ActiveIngredientRepository, Depends(get_active_ingredient_repository)],
+    categories: Annotated[CategoryRepository, Depends(get_category_repository)],
+    symptoms: Annotated[SymptomRepository, Depends(get_symptom_repository)],
+    audit: Annotated[AdminAuditLogService, Depends(get_admin_audit_service)],
+) -> CatalogAdminService:
+    return CatalogAdminService(
+        manufacturers=manufacturers,
+        ingredients=ingredients,
+        categories=categories,
+        symptoms=symptoms,
+        audit=audit,
+    )
+
+
+def get_product_service(
+    products: Annotated[ProductRepository, Depends(get_product_repository)],
+    manufacturers: Annotated[ManufacturerRepository, Depends(get_manufacturer_repository)],
+    categories: Annotated[CategoryRepository, Depends(get_category_repository)],
+    ingredients: Annotated[ActiveIngredientRepository, Depends(get_active_ingredient_repository)],
+    symptoms: Annotated[SymptomRepository, Depends(get_symptom_repository)],
+    audit: Annotated[AdminAuditLogService, Depends(get_admin_audit_service)],
+) -> ProductService:
+    return ProductService(
+        products=products,
+        manufacturers=manufacturers,
+        categories=categories,
+        ingredients=ingredients,
+        symptoms=symptoms,
+        audit=audit,
+    )
+
+
+def get_product_image_service(
+    settings: SettingsDep,
+    products: Annotated[ProductRepository, Depends(get_product_repository)],
+    audit: Annotated[AdminAuditLogService, Depends(get_admin_audit_service)],
+) -> ProductImageService:
+    return ProductImageService(
+        products=products,
+        audit=audit,
+        storage_dir=Path(settings.image_storage_dir),
+        public_base_url=settings.image_public_base_url,
+        max_bytes=settings.image_max_bytes,
+    )
+
+
+def get_product_import_service(
+    products: Annotated[ProductRepository, Depends(get_product_repository)],
+    manufacturers: Annotated[ManufacturerRepository, Depends(get_manufacturer_repository)],
+    categories: Annotated[CategoryRepository, Depends(get_category_repository)],
+    ingredients: Annotated[ActiveIngredientRepository, Depends(get_active_ingredient_repository)],
+    symptoms: Annotated[SymptomRepository, Depends(get_symptom_repository)],
+    product_service: Annotated[ProductService, Depends(get_product_service)],
+) -> ProductImportService:
+    return ProductImportService(
+        products=products,
+        manufacturers=manufacturers,
+        categories=categories,
+        ingredients=ingredients,
+        symptoms=symptoms,
+        product_service=product_service,
+    )

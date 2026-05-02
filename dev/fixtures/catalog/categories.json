@@ -1,0 +1,62 @@
+[
+  {
+    "slug": "vitamins",
+    "parent_slug": null,
+    "sort_order": 10,
+    "translations": [
+      {"language_code": "ru", "name": "Витамины"},
+      {"language_code": "ky", "name": "Витаминдер"},
+      {"language_code": "en", "name": "Vitamins"}
+    ]
+  },
+  {
+    "slug": "pain-relief",
+    "parent_slug": null,
+    "sort_order": 20,
+    "translations": [
+      {"language_code": "ru", "name": "Обезболивающие"},
+      {"language_code": "ky", "name": "Оорутууну басаңдаткыч"},
+      {"language_code": "en", "name": "Pain relief"}
+    ]
+  },
+  {
+    "slug": "cold-flu",
+    "parent_slug": null,
+    "sort_order": 30,
+    "translations": [
+      {"language_code": "ru", "name": "Простуда и грипп"},
+      {"language_code": "ky", "name": "Сууктоо жана грипп"},
+      {"language_code": "en", "name": "Cold and flu"}
+    ]
+  },
+  {
+    "slug": "cardio",
+    "parent_slug": null,
+    "sort_order": 40,
+    "translations": [
+      {"language_code": "ru", "name": "Сердечные средства"},
+      {"language_code": "ky", "name": "Жүрөк дарылары"},
+      {"language_code": "en", "name": "Cardiovascular"}
+    ]
+  },
+  {
+    "slug": "vitamin-c-products",
+    "parent_slug": "vitamins",
+    "sort_order": 10,
+    "translations": [
+      {"language_code": "ru", "name": "Витамин C"},
+      {"language_code": "ky", "name": "C витамини"},
+      {"language_code": "en", "name": "Vitamin C"}
+    ]
+  },
+  {
+    "slug": "multivitamins",
+    "parent_slug": "vitamins",
+    "sort_order": 20,
+    "translations": [
+      {"language_code": "ru", "name": "Поливитамины"},
+      {"language_code": "ky", "name": "Көп витаминдер"},
+      {"language_code": "en", "name": "Multivitamins"}
+    ]
+  }
+]

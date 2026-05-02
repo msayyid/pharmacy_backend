@@ -499,3 +499,40 @@ Never raises — translation issues surface as observable log signals, not 500 r
 **Trade-offs:** Slightly more local resource usage when running tests against compose.
 **Reversibility:** Easy.
 **References:** docker-compose.yml; .env.test.
+
+
+---
+
+### 2026-05-02 — `ProductRead.symptom_ids` via `model_validator(mode="before")`
+**Phase:** 5
+**Context:** `Product.symptoms` is a list of `ProductSymptom` join rows; the API response shape is a flat `symptom_ids: list[int]`. With `from_attributes=True`, Pydantic looks for an attribute literally named `symptom_ids` on the ORM object — which does not exist.
+**Decision:** Add a `model_validator(mode="before")` on `ProductRead` that, when given an ORM `Product`, returns a dict with `symptom_ids` projected from `value.symptoms` plus straight pass-through of the other fields. Routes can keep calling `ProductRead.model_validate(product)` without a custom converter.
+**Alternatives considered:** Add a `@property symptom_ids` to the `Product` model (simpler but couples ORM to API shape). Build a dict in each route handler (verbose; duplicated).
+**Rationale:** Keeps the projection in one place (the response schema). No model change needed.
+**Trade-offs:** Validator's allow-list of fields must be kept in sync with `ProductRead` (acceptable; same file).
+**Reversibility:** Trivial.
+**References:** `app/domain/catalog/schemas.py:ProductRead`.
+
+---
+
+### 2026-05-02 — Catalog routes reload with translations after service mutation
+**Phase:** 5
+**Context:** Catalog ORM models declare `lazy="raise"` on collections (forces explicit eager loading). After `repository.add(...)` calls `session.refresh(...)`, in-memory translations populated by the service are wiped, and serialising the response via `ActiveIngredientRead.model_validate(ai)` raises `InvalidRequestError: 'translations' is not available due to lazy='raise'`.
+**Decision:** Mirror the products-route pattern: after every `service.create_X` / `update_X`, the route calls `repo.get_by_id_with_translations(id)` (or `get_by_id_with_full` for products) before validating the response model. The service stays unchanged (it returns the bare ORM object).
+**Alternatives considered:** Refresh inside the service with `selectinload(...)` (couples the service to one specific eager-load shape). Switch the relationship to `lazy="selectin"` (eager-loads on every query — ditches the explicit-loading discipline).
+**Rationale:** Routes already control the response shape, so they're the right place to control how the response is loaded. Services stay shape-agnostic.
+**Trade-offs:** One extra `SELECT` per write. Acceptable for admin paths.
+**Reversibility:** Easy.
+**References:** `app/api/admin_v1/{active_ingredients,categories,symptoms}.py`.
+
+---
+
+### 2026-05-02 — FULLTEXT smoke test asserts metadata, not live MATCH
+**Phase:** 5
+**Context:** A live `MATCH ... AGAINST` query on `product_translations` requires committed rows (FULLTEXT index visibility). Committing inside the per-test `session` fixture would leak rows past the rollback boundary and contaminate other tests.
+**Decision:** `tests/integration/test_fulltext.py` queries `INFORMATION_SCHEMA.STATISTICS` for the `ftx_pt_search` index and parses `SHOW CREATE TABLE` output for the `WITH PARSER ngram` clause. Phase 7 will add a live MATCH suite seeded from a real fixture pool.
+**Alternatives considered:** Manage a separate non-rolled-back session for FT tests (complex). Run live MATCH and rely on per-session migration teardown to clean up (fragile under parallelism).
+**Rationale:** Smoke confidence at low cost. The behavioural test belongs in the search phase.
+**Trade-offs:** No end-to-end coverage of the parser/score yet.
+**Reversibility:** Replace with a live test in Phase 7.
+**References:** `tests/integration/test_fulltext.py`; `migrations/versions/20260502_1724_create_catalog_and_audit_log.py`.
