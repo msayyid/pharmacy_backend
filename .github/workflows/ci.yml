@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-type-test:
+    name: Lint, type-check, and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen
+
+      - name: Bring up test MySQL + Redis (with ngram_token_size=2)
+        run: docker compose --profile test up -d mysql-test redis
+
+      - name: Wait for services to be healthy
+        run: |
+          for i in $(seq 1 60); do
+            mysql_ok=$(docker compose exec -T mysql-test mysqladmin ping -uroot -ptest 2>/dev/null | grep -c "alive" || true)
+            redis_ok=$(docker compose exec -T redis redis-cli ping 2>/dev/null | grep -c "PONG" || true)
+            if [ "$mysql_ok" = "1" ] && [ "$redis_ok" = "1" ]; then
+              echo "services healthy after ${i} attempts"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Lint (ruff check + format check)
+        run: make lint
+
+      - name: Type-check (mypy --strict)
+        run: make type
+
+      - name: Run tests
+        run: make test
+
+      - name: Stop services
+        if: always()
+        run: docker compose --profile test down -v
+
+      # Optional: upload coverage if generated.
+      # - name: Upload coverage
+      #   if: success()
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: coverage-${{ github.sha }}
+      #     path: coverage.xml

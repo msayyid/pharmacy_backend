@@ -1,0 +1,49 @@
+# Build context exclusion: keep the image small and the layer cache deterministic.
+# This file is independent of .gitignore — Docker context != Git.
+
+# ─── Version control ───────────────────────────────────────────────────────────
+.git/
+.gitignore
+.dockerignore
+.github/
+
+# ─── Python artifacts ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# ─── Tool caches ───────────────────────────────────────────────────────────────
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage*
+htmlcov/
+
+# ─── Local env (real secrets must never enter the image) ──────────────────────
+.env
+.env.local
+.env.*.local
+
+# ─── Project docs / specs (not needed at runtime) ──────────────────────────────
+specs/
+docs/
+*.md
+!README.md
+
+# ─── Tests (not needed in production image) ────────────────────────────────────
+tests/
+
+# ─── IDE / OS ──────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+.DS_Store
+
+# ─── Misc ──────────────────────────────────────────────────────────────────────
+*.log
+node_modules/

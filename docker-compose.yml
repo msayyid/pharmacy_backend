@@ -1,0 +1,88 @@
+# Local dev infrastructure.
+#
+# Default `docker compose up -d` brings up MySQL + Redis only — uvicorn runs on
+# host via `make dev`. Use --profile=app to run api/worker in containers, and
+# --profile=test to spin a fast tmpfs MySQL on :3307 for tests.
+
+services:
+  mysql:
+    image: mysql:8.4
+    # NOTE: BACKEND §25 included `--default-authentication-plugin=caching_sha2_password`
+    # but MySQL 8.4 removed that variable (caching_sha2_password is the default).
+    # sql_mode aligns to CLAUDE.md (STRICT_TRANS_TABLES + ONLY_FULL_GROUP_BY) which
+    # is stricter than BACKEND §25's STRICT_ALL_TABLES set. See DECISION_LOG.
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_0900_ai_ci
+      --sql-mode=STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ONLY_FULL_GROUP_BY,ERROR_FOR_DIVISION_BY_ZERO
+      --innodb-default-row-format=DYNAMIC
+      --ngram-token-size=2
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: pharmacy
+      MYSQL_USER: pharmacy
+      MYSQL_PASSWORD: pharmacy
+    ports: ["3306:3306"]
+    volumes: ["mysql_data:/var/lib/mysql"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+
+  mysql-test:
+    image: mysql:8.4
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_0900_ai_ci
+      --sql-mode=STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ONLY_FULL_GROUP_BY,ERROR_FOR_DIVISION_BY_ZERO
+      --innodb-default-row-format=DYNAMIC
+      --ngram-token-size=2
+    environment:
+      MYSQL_ROOT_PASSWORD: test
+      MYSQL_DATABASE: pharmacy_test
+      MYSQL_USER: test
+      MYSQL_PASSWORD: test
+    ports: ["3307:3306"]
+    tmpfs: ["/var/lib/mysql"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-ptest"]
+      interval: 3s
+      timeout: 2s
+      retries: 15
+      start_period: 30s
+    profiles: ["test"]
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file: .env
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    ports: ["8000:8000"]
+    volumes: ["./:/app"]
+    profiles: ["app"]
+
+  worker:
+    build: .
+    command: arq app.workers.settings.WorkerSettings
+    env_file: .env
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes: ["./:/app"]
+    profiles: ["app"]
+
+volumes:
+  mysql_data:

@@ -1,0 +1,63 @@
+# ─── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ─── Distribution / packaging ──────────────────────────────────────────────────
+build/
+dist/
+*.egg-info/
+*.egg
+wheels/
+pip-wheel-metadata/
+
+# ─── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ─── uv ────────────────────────────────────────────────────────────────────────
+.uv/
+
+# ─── Tool caches ───────────────────────────────────────────────────────────────
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+
+# ─── Environment files ─────────────────────────────────────────────────────────
+# .env.example and .env.test ARE committed per BACKEND_BLUEPRINT §5.2
+.env
+.env.local
+.env.*.local
+!.env.example
+!.env.test
+
+# ─── IDE / editors ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ─── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─── Project-specific ──────────────────────────────────────────────────────────
+*.log
+*.pid
+.cache/
+node_modules/
+
+# ─── Docker volumes (if mounted into repo dir) ─────────────────────────────────
+docker_data/
+mysql_data/
+redis_data/

@@ -1,0 +1,41 @@
+# Pre-commit hooks. Run on every git commit.
+# Install: `make pre-commit`. Update: `pre-commit autoupdate`.
+
+default_language_version:
+  python: python3.12
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-case-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # Use the project venv's mypy (via uv) so it sees every runtime dep without
+  # us having to mirror them in `additional_dependencies` (which would drift).
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy --strict (uv-managed)
+        entry: uv run mypy --strict
+        language: system
+        types: [python]
+        files: ^app/
+        pass_filenames: false   # mypy walks the package; passing files breaks --strict module discovery
+        args: [app]
