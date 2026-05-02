@@ -13,6 +13,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project initialised; specs and master plan in place.
 - `BUILD_PLAN.md`, `BUILD_PROGRESS.md`, `OPEN_QUESTIONS.md` (12 substantive items), `RISKS.md` (top-10 ranked + watching list), `DECISION_LOG.md` template, this file.
 
+#### Phase 8 — Cart, Checkout & Place-Order (2026-05-02) — complete
+
+- **5 new tables** in `app/domain/orders/models.py`: `carts` (UUID PK + `chk_carts_owner` user_id-OR-session_id + 30-day expiry), `cart_items` (`UNIQUE(cart_id, product_id)` + `quantity > 0` + `price_snapshot >= 0`), `orders` (UUID PK, `order_number` UNIQUE, `chk_orders_total` enforces `total = subtotal + delivery_fee - discount_amount` via `op.execute`), `order_items` (one **per allocation** — `chk_order_items_total CHECK line_total = unit_price * quantity` via `op.execute`; `product_id` ON DELETE SET NULL preserves snapshot), `order_status_history` (append-only state-transition audit), and `order_sequences(year PK, last_assigned)` for atomic per-year `order_number` allocation. `StrEnum`s for `OrderStatus` / `PaymentStatus` / `PaymentMethod` / `DeliveryMethod`.
+- **Migration `ff2951f68321 — create orders + cart`** lifts the deferred `fk_sm_order` foreign key on `stock_movements.order_id → orders.id` (Phase 6 left the column without a constraint because the table didn't exist). Hand-edited from autogen; `op.execute` for the multi-clause CHECKs. Round-trips clean.
+- **Repositories** in `app/domain/orders/repositories.py`: `CartRepository` (get-or-create per user / per session, fetch with items, clear, prune-expired), `OrderRepository` (get-by-id / get-by-number with eager items + history, paginated user listing), `OrderStatusHistoryRepository` (append), `OrderSequenceRepository` (`SELECT … FOR UPDATE` increment, formats `PH-YYYY-NNNNNN`).
+- **`CartService`** (`app/domain/orders/cart_service.py`):
+    - `get_or_create(user, session_id)` — guest-or-user resolution; creates with `branch_id` from the storefront resolver.
+    - `add_item / update_qty / remove_item / clear` — re-validates stock + price, snapshots the price at write time, caps at `Product.max_per_order`.
+    - `merge_guest_into_user` — additive on overlap (capped at `max_per_order`); deletes the guest cart afterwards.
+    - `expire_check` raises `CartExpiredError` (HTTP 410) past `expires_at`.
+- **`CheckoutService`** (`app/domain/orders/checkout_service.py`):
+    - `quote(cart, delivery_method, payment_method)` — recomputes subtotal at current `branch_products.price`; computes delivery_fee per PRODUCT §11.4 (200 KGS / free over 1500 KGS / 0 for pickup); surfaces `stock_conflicts` + `price_conflicts` + `cold_chain_warning`. Does NOT reserve.
+    - `place_order(...)` — the heart of the system. One transaction: idempotency check → re-validate stock + prices under `FOR UPDATE` → run `inventory.allocate_for_order` (FEFO with `FOR UPDATE SKIP LOCKED`) per cart line → allocate `order_number` via `OrderSequenceRepository` → insert `Order` → insert one `OrderItem` per allocation (cart line spanning two batches → two order_items) → `inventory.reserve` → `OrderStatusHistory(NULL → pending)` → card-payment scaffold (`payment_redirect_url` stub) → clear cart → idempotency store. ~250 lines, heavily commented.
+- **Customer-side `OrderService`** (`app/domain/orders/order_service.py`):
+    - `list_for_user` (paginated), `get_for_user` (404/403), `get_status_for_user` (slim polling shape).
+    - `cancel_by_customer` — only `pending` / `confirmed`; releases reservations via Phase 6 `release_reservations`.
+    - `reorder` — adds prior items to current cart with annotations (`added` / `out_of_stock` / `price_changed` / `product_deleted` / `max_per_order_capped`).
+- **3 customer route modules** under `/api/v1`:
+    - `cart.py` — `GET /cart`, `POST /cart/items`, `PATCH /cart/items/{id}`, `DELETE /cart/items/{id}`, `POST /cart/clear`. Guest cart cookie `pharmacy_cart_session` (HttpOnly, SameSite=Lax, 30-day TTL).
+    - `checkout.py` — `POST /checkout/quote`, `POST /checkout/place` (`Idempotency-Key` REQUIRED — 400 if missing).
+    - `me_orders.py` — `GET /me/orders`, `GET /me/orders/{n}`, `GET /me/orders/{n}/status`, `POST /me/orders/{n}/cancel`, `POST /me/orders/{n}/reorder`.
+- **DI** — `get_cart_repository`, `get_order_repository`, `get_order_history_repository`, `get_order_sequence_repository`, `get_cart_service`, `get_checkout_service`, `get_customer_order_service`. Plus `CartOwner` dep that resolves `(user_or_None, session_id_or_None)` from the `OptionalCurrentUser` + `pharmacy_cart_session` cookie.
+- **`OptionalCurrentUser`** dep (Phase 7 addition, used here) — same as `get_current_user` but returns `None` instead of raising on missing tokens.
+- **57 new tests (396 total)**:
+    - Unit: `test_cart_service.py` (8 — add caps at `max_per_order`; insufficient-stock rejects; update / remove; merge additive; merge promotes guest when no user cart; expired cart blocks adds); `test_checkout_service.py` (8 — delivery-fee math; quote totals + price-conflict surfacing; place_order happy path; place_order raises `CheckoutValidationError` on price drift; place_order idempotency replay returns cached); `test_order_service.py` (6 — cancel pending succeeds; cancel preparing blocked; cross-user 403; reorder adds in-stock; reorder flags `out_of_stock`; reorder flags `product_deleted`).
+    - Integration: `test_order_concurrency.py` — parameterised `ORDER_CONCURRENT_LOOPS=30` × `test_two_orders_two_batches_partial_allocation` (two users, gather, both succeed without oversell, total reserved == 16); `test_idempotent_double_place_same_body_returns_cached`; `test_idempotent_conflict_on_different_body`. **Defaults to 30 loops; nightly CI bumps to 50** (DECISION_LOG'd).
+    - E2E: `test_checkout_flow.py` (3 — guest cart → OTP login → place order → list orders → cancel; `Idempotency-Key required` 400; idempotent replay returns same order_number over HTTP).
+- **Test factories**: `seed_minimal_order` (Phase 6 inventory tests now satisfy the `fk_sm_order` FK via this stub), `seed_cart`, `seed_cart_item`, `seed_cart_committed`.
+- 396 tests pass; mypy --strict + ruff clean across 90 source files.
+
 #### Phase 7 — Customer Discovery (2026-05-02) — complete
 
 - **`SearchLog` model** + migration + ``SearchLogRepository`` (`append`, `popular_queries`, `recent_zero_results`). Stored in ``app/domain/ops/``.

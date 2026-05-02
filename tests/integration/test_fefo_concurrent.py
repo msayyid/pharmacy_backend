@@ -158,9 +158,12 @@ async def _reserve_in_own_session(
     """One reservation in its own session/transaction. Returns the
     exception (if any) so the caller can assert on the outcome.
     """
+    from tests.factories.orders import seed_minimal_order as _seed_order
+
     async with factory() as session:
         svc = _make_service(session)
-        order_id = uuid7()
+        order = await _seed_order(session, branch_id=branch_id)
+        order_id = order.id
         try:
             allocations = await svc.allocate_for_order(
                 branch_id=branch_id, product_id=product_id, qty=qty

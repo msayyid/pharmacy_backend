@@ -754,3 +754,89 @@ Symptoms: substitutes excluded the source product's id but matched it (wrong-dir
 **Reversibility:** Trivial.
 
 **References:** `app/domain/catalog/repositories.py:_guid_bind`, `_guid_load`.
+
+---
+
+### 2026-05-02 — One `order_item` per allocation, not per cart line
+**Phase:** 8
+**Context:** A single cart line for product P with quantity 10 may FEFO-split across two batches (e.g. 6 from batch A, 4 from batch B). Two natural shapes: (a) one `order_item` per cart line, with `inventory_batch_id` left blank if multi-batch; (b) one `order_item` per allocation slice — same product, same line, but a row per batch.
+
+**Decision:** Shape (b) — **one `order_item` per allocation**. A 2-batch split produces 2 rows on the order, each snapshotting its own `batch_number` + `expiry_date` + per-batch quantity. Cart-line totals are reconstructable by grouping `order_items` by `product_id`.
+
+**Rationale:** PRODUCT §10.7 (recall handling) needs per-batch traceability — which customers received batch X. Snapshot integrity per batch is the cleanest way to deliver that without a side table. Shape (a) would have required an `order_item_batches` join table to record allocations.
+
+**Trade-offs:** UI rendering needs a group-by step on `product_id`. Cosmetic; the API can pre-group when convenient.
+
+**Reversibility:** Hard once orders exist — but the data shape is cumulative; we'd never need to switch back.
+
+**References:** `app/domain/orders/checkout_service.py:place_order` (step 7); PRODUCT §10.7.
+
+---
+
+### 2026-05-02 — `order_number` via per-year `order_sequences` row + `SELECT … FOR UPDATE`
+**Phase:** 8
+**Context:** Customer-facing identifier needs to be human-readable (`PH-YYYY-NNNNNN`), unique, monotonic per year, and atomic under concurrent place-orders. MySQL's `AUTO_INCREMENT` doesn't restart per year; UUIDs aren't readable; per-year `AUTO_INCREMENT` tables churn schema annually.
+
+**Decision:** Single `order_sequences(year INT PK, last_assigned BIGINT)` table. `OrderSequenceRepository.next_for_year(year)` does `SELECT … WHERE year = ? FOR UPDATE`, lazily inserts the row at `0` for a fresh year, increments, returns the new value. Format: `PH-{year}-{value:06d}`. The whole thing runs inside the place-order transaction so the increment is part of the atomic write.
+
+**Alternatives considered:** (a) Annual `orders_2026 / orders_2027` partition tables — operational nightmare. (b) Hash-of-uuid7 truncated to 6 digits — not monotonic, possible collisions. (c) MySQL sequences via stored procedure — committee vibe.
+
+**Rationale:** Smallest-thing-that-works. The row lock serializes concurrent place-orders **on the sequence only** — by the time the lock is grabbed, the FEFO + reserve work is done; the lock window is microseconds.
+
+**Trade-offs:** All concurrent place-orders within the same year serialize on this single row. At Bishkek-pharmacy traffic (≤ a few QPS) this is fine. At hyperscale, sharded sequences would replace this without changing the public format.
+
+**Reversibility:** Trivial.
+
+**References:** `app/domain/orders/repositories.py:OrderSequenceRepository`; `app/domain/orders/models.py:OrderSequence`; PRODUCT-spec format requirement.
+
+---
+
+### 2026-05-02 — REPEATABLE READ + per-row `FOR UPDATE` is sufficient; no SERIALIZABLE
+**Phase:** 8
+**Context:** MySQL InnoDB defaults to REPEATABLE READ. Concerns: phantom reads on stock; price snapshots updating between cart-load and place-order; race between two devices placing the same cart.
+
+**Decision:** Stay on REPEATABLE READ. The place-order transaction takes targeted row locks: `branch_products` via `with_for_update()` (`get_for_update`), inventory_batches via `FOR UPDATE SKIP LOCKED` (Phase 6 `list_for_fefo_locked`), and `order_sequences` via `FOR UPDATE` for the order-number bump. SQLAlchemy's session-level autoflush ensures writes are visible to subsequent SELECTs in the same transaction. SERIALIZABLE would force gap locks across the board with a measurable throughput cost.
+
+**Verification:** `tests/integration/test_order_concurrency.py::test_two_orders_two_batches_partial_allocation` runs `asyncio.gather` of two place-orders against the same `(branch, product)` and asserts no oversell, no double-spend per batch, and exactly the expected reservation deltas — 30 loops by default, 50 in nightly.
+
+**Alternatives considered:** SERIALIZABLE for `place_order` only — saves nothing; row locks already cover the invariants. Optimistic locking via version columns — adds bookkeeping for a problem we don't have.
+
+**Trade-offs:** Future SQL changes that break the locking discipline could re-introduce races; the test suite is the safety net.
+
+**Reversibility:** Trivial — flip an isolation pragma if needed.
+
+**References:** `app/domain/orders/checkout_service.py:place_order`; `tests/integration/test_order_concurrency.py`; PHARMACY §11.4.
+
+---
+
+### 2026-05-02 — Idempotency uses `app.core.idempotency` directly in the route, not a global middleware
+**Phase:** 8
+**Context:** Phase 3 shipped a Redis-backed idempotency helper (`check`, `store`, `body_digest`). Place-order needs the header `Idempotency-Key`; future admin endpoints (refund, bulk import) will too. Two integration shapes: (a) global middleware that intercepts every POST; (b) per-route inline call.
+
+**Decision:** Per-route inline call. The route reads `Idempotency-Key` (required — `ValidationError 400 idempotency_key_required` if absent), computes `body_digest(orjson.dumps(payload.model_dump(mode="json")))`, calls `idem.check` → `hit_same` returns the cached response, `hit_different` returns 409 `idempotency_conflict`, `miss` proceeds and `idem.store`s on success.
+
+**Rationale:** Only `POST /checkout/place`, `POST /admin/orders/.../refund` (Phase 9), and `POST /admin/products/import/apply` (Phase 5 — already shipped without it; could be retrofitted) need this. A global middleware adds blast radius (everything has to opt out) without a payoff. Inline call is auditable and doesn't surprise readers.
+
+**Alternatives considered:** Middleware with an allow-list — added indirection. Generic dependency that returns the cached response — couples request shape to dep machinery.
+
+**Trade-offs:** Each endpoint that adopts this needs ~10 lines of boilerplate. Acceptable.
+
+**Reversibility:** Easy.
+
+**References:** `app/api/v1/checkout.py:place_order`; `app/core/idempotency.py`; BACKEND §21.
+
+---
+
+### 2026-05-02 — Cart writes allowed for guests via `pharmacy_cart_session` cookie; merge runs on login
+**Phase:** 8
+**Context:** PRODUCT J-01 (Bekzat — first-time symptom shopper) requires cart-write before any auth challenge. The auth wall is at "Place order", not "Add to cart". Implementation: a guest-session cookie identifies the cart for unauthenticated users; on successful login, the guest cart is merged into the user's cart.
+
+**Decision:** Cookie name `pharmacy_cart_session`, HttpOnly, SameSite=Lax, 30-day TTL, `secure=True` when the request scheme is HTTPS. The `CartOwner` dep resolves `(user_or_None, session_id_or_None)` — logged-in users always win (their cart is keyed by `user_id`). The `_ensure_session_cookie` helper mints a session id on first guest GET. `CartService.merge_guest_into_user(user, session_id)` is the merge entry point — Phase 8 ships the method; the auth-flow hook (call from `AuthService.verify_otp` on a fresh login) is a one-liner deferred to a Phase 9 cleanup pass.
+
+**Rationale:** Without guest carts, the J-01 journey breaks (customer adds to cart, hits auth wall, loses cart on login). Phase 8.5 cookie + `CartService.merge_guest_into_user` covers the spec; the auth-flow wiring is mechanical.
+
+**Trade-offs:** Cookie-based session adds CSRF surface — mitigated by SameSite=Lax + the cookie being only useful for the specific guest's cart. Authenticated users ignore the cookie entirely.
+
+**Reversibility:** Easy — drop the cookie dependency and require auth at first cart write. Would break J-01.
+
+**References:** `app/api/v1/cart.py:_ensure_session_cookie`; `app/api/deps.py:get_cart_owner`; `app/domain/orders/cart_service.py:merge_guest_into_user`; PRODUCT §7.1, §F-CART-001.

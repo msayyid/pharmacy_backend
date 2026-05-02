@@ -295,8 +295,8 @@ class InventoryBatch(Base, TimestampMixin):
 class StockMovement(Base):
     """Immutable audit log of every stock change.
 
-    ``order_id`` is column-only at Phase 6 — the FK to ``orders.id`` is
-    added by Phase 8's migration. Decision logged in DECISION_LOG.
+    ``order_id`` carries an FK to ``orders.id`` (added by Phase 8's
+    migration; was column-only at Phase 6).
     """
 
     __tablename__ = "stock_movements"
@@ -323,7 +323,10 @@ class StockMovement(Base):
 
     # FK added in Phase 8 once ``orders`` exists. Keep column nullable so
     # admin-driven movements (received, damaged, adjusted) leave it NULL.
-    order_id: Mapped[UUID | None] = mapped_column(GUID)
+    order_id: Mapped[UUID | None] = mapped_column(
+        GUID,
+        ForeignKey("orders.id", name="fk_sm_order", ondelete="SET NULL"),
+    )
     admin_user_id: Mapped[int | None] = mapped_column(
         BigInteger,
         ForeignKey("admin_users.id", name="fk_sm_admin", ondelete="SET NULL"),

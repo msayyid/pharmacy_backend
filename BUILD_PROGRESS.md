@@ -5,11 +5,11 @@
 
 ## Current state
 
-- **Active phase:** Phase 7 — Customer Discovery (Browse & Search) _(complete)_
-- **Status:** **complete** — 339 tests pass; mypy --strict clean across 81 source files.
+- **Active phase:** Phase 8 — Cart, Checkout & Place-Order (FEFO) _(complete)_
+- **Status:** **complete** — 396 tests pass (incl. 30-loop concurrent place-order); mypy --strict + ruff clean across 90 source files.
 - **Last session:** 2026-05-02
-- **Sub-phases done:** 7.1 (search_log table + synonyms JSON), 7.2 (storefront repo methods incl. composite-ranked search), 7.3 (storefront schemas + StorefrontCatalogService + SearchService), 7.4 (cache invalidation hooks + DI), 7.5 (categories/symptoms/branches routes), 7.6 (products/search routes + router), 7.7 (33 new tests across repo / search quality / caching / e2e), 7.8 (hand-off + commit).
-- **Next session should:** start Phase 8 — Cart, Checkout & Place-Order (FEFO). Re-read `PRODUCT §7.1–7.2, §11`, `PHARMACY §7.1–7.2, §11.4`, `BACKEND §15` (idempotency). Phase 8 will reuse `InventoryService.allocate_for_order` + `reserve` from Phase 6 inside the place-order transaction.
+- **Sub-phases done:** 8.1 (Cart/Order/OrderItem/OrderStatusHistory/OrderSequence models + migration with `chk_orders_total` / `chk_order_items_total` via op.execute, plus deferred `fk_sm_order` lifted), 8.2 (4 repositories + atomic OrderSequenceRepository), 8.3 (request/response schemas + CartService with merge-on-login), 8.4 (CheckoutService.quote + place_order critical transaction; customer OrderService list/get/cancel/reorder), 8.5 (3 customer route modules + DI + guest-cart cookie resolver), 8.6 (57 new tests: 8 cart unit + 8 checkout unit + 6 order unit + 32-loop concurrency + 3 e2e), 8.7 (hand-off + commit).
+- **Next session should:** start Phase 9 — Admin Order Lifecycle, Reports & Audit. Re-read `PRODUCT §7.4–7.6, §8.7–8.9, §9` (state machine), `PHARMACY §7.5, §11.5–11.6`, `BACKEND §15`. Admin order queue + picking screen + status transitions with side effects + sales/expiring/low-stock reports + audit-log viewer.
 
 ## Phases
 
@@ -21,6 +21,7 @@
 - [x] Phase 5 — Catalog Domain & Admin Catalog API _(done 2026-05-02)_
 - [x] Phase 6 — Inventory Domain & Admin Inventory API _(done 2026-05-02)_
 - [x] Phase 7 — Customer Discovery (Browse & Search) _(done 2026-05-02)_
+- [x] Phase 8 — Cart, Checkout & Place-Order (FEFO) _(done 2026-05-02)_
 - [ ] Phase 7 — Customer Discovery (Browse & Search)
 - [ ] Phase 8 — Cart, Checkout & Place-Order (FEFO)
 - [ ] Phase 9 — Admin Order Lifecycle, Reports & Audit
@@ -218,7 +219,60 @@ make test                # 339 tests pass (306 prior + 33 new in Phase 7)
 make lint && make type   # both clean
 ```
 
-### After Phase 8 (placeholder — extends Phase 4)
+### After Phase 8 (verified 2026-05-02)
+
+```bash
+make docker-up-test                                    # mysql-test :3307 + redis
+set -a && source .env.test && set +a
+uv run alembic upgrade head                            # 7 migrations: incl. orders + cart
+
+# Seed full storefront (catalog → inventory → ready for orders).
+uv run python -m dev.fixtures.catalog.seed
+uv run python -m dev.fixtures.inventory.seed
+
+uv run uvicorn app.main:app --port 8765 > /tmp/uvicorn.log 2>&1 &
+sleep 1
+
+# 1. Register a guest cart
+curl -sc /tmp/cookies.txt http://localhost:8765/api/v1/cart | python3 -m json.tool
+
+# 2. Get a product slug
+SLUG=$(curl -s http://localhost:8765/api/v1/categories/pain-relief/products -H "Accept-Language: ru" | python3 -c "import sys,json; print(json.load(sys.stdin)['items'][0]['slug'])")
+PID=$(curl -s http://localhost:8765/api/v1/products/$SLUG -H "Accept-Language: ru" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+# 3. Add to cart
+curl -sb /tmp/cookies.txt -c /tmp/cookies.txt -X POST http://localhost:8765/api/v1/cart/items \
+  -H "Content-Type: application/json" -d "{\"product_id\":\"$PID\",\"quantity\":2}"
+
+# 4. OTP login
+PHONE="+996700123456"
+curl -s -X POST http://localhost:8765/api/v1/auth/otp/request -H "Content-Type: application/json" -d "{\"phone\":\"$PHONE\"}"
+# Read OTP from logs (FakeSmsQueue prints):
+CODE=$(grep -oE 'code=\\d+' /tmp/uvicorn.log | tail -1 | sed 's/code=//')
+ACCESS=$(curl -s -X POST http://localhost:8765/api/v1/auth/otp/verify -H "Content-Type: application/json" -d "{\"phone\":\"$PHONE\",\"code\":\"$CODE\"}" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# 5. Place order with idempotency
+IDEM=$(uuidgen)
+curl -s -X POST http://localhost:8765/api/v1/checkout/place \
+  -H "Authorization: Bearer $ACCESS" \
+  -H "Idempotency-Key: $IDEM" \
+  -H "Content-Type: application/json" \
+  -d '{"delivery_method":"pickup","payment_method":"cash_on_delivery","recipient_name":"Тест","recipient_phone":"+996700123456"}'
+# → {"order_number":"PH-2026-000001","status":"pending","payment_status":"pending","total":"170.00",...}
+
+# 6. List my orders + view detail
+curl -s -H "Authorization: Bearer $ACCESS" http://localhost:8765/api/v1/me/orders | python3 -m json.tool
+curl -s -H "Authorization: Bearer $ACCESS" http://localhost:8765/api/v1/me/orders/PH-2026-000001 | python3 -m json.tool
+
+# Concurrent place-order test
+ORDER_CONCURRENT_LOOPS=30 uv run pytest tests/integration/test_order_concurrency.py
+# → 32 passed (no oversell, no duplicate batch reserve, idempotency works)
+
+make test                # 396 tests pass (339 prior + 57 new in Phase 8)
+make lint && make type   # both clean
+```
+
+### After Phase 9 (placeholder)
 
 ```bash
 # Browse, add to cart, checkout COD

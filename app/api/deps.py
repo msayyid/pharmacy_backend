@@ -13,9 +13,9 @@ Reference: BACKEND_BLUEPRINT.md §13.2.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import Depends, Header
+from fastapi import Cookie, Depends, Header
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +37,7 @@ from app.domain.catalog.repositories import (
 from app.domain.catalog.search import SearchService
 from app.domain.catalog.services import CatalogAdminService
 from app.domain.catalog.storefront import StorefrontCatalogService
+from app.domain.identity.models import User
 from app.domain.identity.repositories import (
     AdminSessionRepository,
     AdminUserRepository,
@@ -63,6 +64,15 @@ from app.domain.ops.repositories import (
     SearchLogRepository,
 )
 from app.domain.ops.services import AdminAuditLogService
+from app.domain.orders.cart_service import CartService
+from app.domain.orders.checkout_service import CheckoutService
+from app.domain.orders.order_service import OrderService
+from app.domain.orders.repositories import (
+    CartRepository,
+    OrderRepository,
+    OrderSequenceRepository,
+    OrderStatusHistoryRepository,
+)
 from app.integrations.sms.base import get_sms_queue
 
 # ─── Type aliases ─────────────────────────────────────────────────────────────
@@ -346,3 +356,111 @@ def get_search_service(
         symptoms=symptoms,
         search_log=search_log,
     )
+
+
+# ─── Phase 8 — Order / cart factories ────────────────────────────────────────
+
+
+def get_cart_repository(session: DbSession) -> CartRepository:
+    return CartRepository(session)
+
+
+def get_order_repository(session: DbSession) -> OrderRepository:
+    return OrderRepository(session)
+
+
+def get_order_history_repository(
+    session: DbSession,
+) -> OrderStatusHistoryRepository:
+    return OrderStatusHistoryRepository(session)
+
+
+def get_order_sequence_repository(session: DbSession) -> OrderSequenceRepository:
+    return OrderSequenceRepository(session)
+
+
+def get_cart_service(
+    carts: Annotated[CartRepository, Depends(get_cart_repository)],
+    products: Annotated[ProductRepository, Depends(get_product_repository)],
+    branch_products: Annotated[BranchProductRepository, Depends(get_branch_product_repository)],
+) -> CartService:
+    return CartService(
+        carts=carts,
+        products=products,
+        branch_products=branch_products,
+    )
+
+
+def get_checkout_service(
+    carts: Annotated[CartRepository, Depends(get_cart_repository)],
+    orders: Annotated[OrderRepository, Depends(get_order_repository)],
+    order_history: Annotated[OrderStatusHistoryRepository, Depends(get_order_history_repository)],
+    order_sequence: Annotated[OrderSequenceRepository, Depends(get_order_sequence_repository)],
+    products: Annotated[ProductRepository, Depends(get_product_repository)],
+    branch_products: Annotated[BranchProductRepository, Depends(get_branch_product_repository)],
+    batches: Annotated[InventoryBatchRepository, Depends(get_inventory_batch_repository)],
+    addresses: Annotated[UserAddressRepository, Depends(get_user_address_repository)],
+    inventory: Annotated[InventoryService, Depends(get_inventory_service)],
+) -> CheckoutService:
+    return CheckoutService(
+        carts=carts,
+        orders=orders,
+        order_history=order_history,
+        order_sequence=order_sequence,
+        products=products,
+        branch_products=branch_products,
+        batches=batches,
+        addresses=addresses,
+        inventory=inventory,
+    )
+
+
+def get_customer_order_service(
+    orders: Annotated[OrderRepository, Depends(get_order_repository)],
+    order_history: Annotated[OrderStatusHistoryRepository, Depends(get_order_history_repository)],
+    cart_service: Annotated[CartService, Depends(get_cart_service)],
+    products: Annotated[ProductRepository, Depends(get_product_repository)],
+    branch_products: Annotated[BranchProductRepository, Depends(get_branch_product_repository)],
+    inventory: Annotated[InventoryService, Depends(get_inventory_service)],
+) -> OrderService:
+    return OrderService(
+        orders=orders,
+        order_history=order_history,
+        cart_service=cart_service,
+        products=products,
+        branch_products=branch_products,
+        inventory=inventory,
+    )
+
+
+# ─── Cart owner resolver (user OR guest cookie) ──────────────────────────────
+
+
+GUEST_CART_COOKIE = "pharmacy_cart_session"
+GUEST_CART_COOKIE_TTL = 30 * 24 * 60 * 60  # 30 days, seconds
+
+
+# Lazy import here so :mod:`app.domain.identity.dependencies` (which
+# imports ``SettingsDep`` from this module) can finish loading before
+# we reference its symbols. Eager top-level import would deadlock
+# Python's module-loading machinery.
+def _optional_current_user_dep() -> Any:
+    from app.domain.identity.dependencies import get_optional_current_user
+
+    return get_optional_current_user
+
+
+async def get_cart_owner(
+    user: Annotated[User | None, Depends(_optional_current_user_dep())],
+    pharmacy_cart_session: Annotated[str | None, Cookie()] = None,
+) -> tuple[User | None, str | None]:
+    """Return ``(user_or_none, session_id_or_none)`` for cart routes.
+
+    Logged-in users always win — their cart is keyed by user_id even
+    if the cookie is also present (the cookie was used pre-login; the
+    merge happens at login-time, not on every request).
+    """
+    return (user, pharmacy_cart_session if user is None else None)
+
+
+CartOwner = Annotated[tuple[User | None, str | None], Depends(get_cart_owner)]

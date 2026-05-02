@@ -26,10 +26,10 @@ from app.core.db_base import Base
 import app.domain.catalog.models
 import app.domain.identity.models
 import app.domain.inventory.models
-import app.domain.ops.models  # noqa: F401
+import app.domain.ops.models
+import app.domain.orders.models  # noqa: F401
 
-# Phase 6+ will add:
-#   import app.domain.orders.models
+# Phase 10+ will add:
 #   import app.domain.payments.models
 #   import app.domain.deliveries.models
 

@@ -16,7 +16,10 @@ from app.api.v1 import (
     account,
     auth,
     branches,
+    cart,
     categories,
+    checkout,
+    me_orders,
     products,
     search,
     symptoms,
@@ -30,3 +33,6 @@ router.include_router(symptoms.router)
 router.include_router(branches.router)
 router.include_router(products.router)
 router.include_router(search.router)
+router.include_router(cart.router)
+router.include_router(checkout.router)
+router.include_router(me_orders.router)

@@ -21,7 +21,6 @@ from app.core.errors import (
     PermissionDeniedError,
     ValidationError,
 )
-from app.core.types import uuid7
 from app.domain.identity.models import AdminUser
 from app.domain.inventory.repositories import (
     BranchProductRepository,
@@ -44,6 +43,7 @@ from tests.factories.inventory import (
     seed_branch_product,
     seed_inventory_batch,
 )
+from tests.factories.orders import seed_minimal_order
 
 pytestmark = pytest.mark.unit
 
@@ -347,7 +347,7 @@ async def test_reserve_increments_reserved_and_writes_movement(
         quantity_received=20,
         quantity_remaining=20,
     )
-    order_id = uuid7()
+    order_id = (await seed_minimal_order(session, branch_id=branch.id)).id
 
     allocations = await svc.allocate_for_order(branch_id=branch.id, product_id=pid, qty=7)
     await svc.reserve(
@@ -386,7 +386,7 @@ async def test_convert_reservation_to_sold_decrements_total(
         quantity_received=20,
         quantity_remaining=20,
     )
-    order_id = uuid7()
+    order_id = (await seed_minimal_order(session, branch_id=branch.id)).id
 
     allocations = await svc.allocate_for_order(branch_id=branch.id, product_id=pid, qty=7)
     await svc.reserve(
@@ -419,7 +419,7 @@ async def test_release_reservations_returns_to_free_pool(
         quantity_received=20,
         quantity_remaining=20,
     )
-    order_id = uuid7()
+    order_id = (await seed_minimal_order(session, branch_id=branch.id)).id
 
     allocations = await svc.allocate_for_order(branch_id=branch.id, product_id=pid, qty=5)
     await svc.reserve(
