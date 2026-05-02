@@ -128,6 +128,16 @@
 
 ## Resolved questions
 
-> When a question is answered, move it here with the resolution and the date. Mirror the decision in `DECISION_LOG.md`.
+### Q6 — `python-jose` vs PyJWT *(resolved 2026-05-02 in Phase 4)*
 
-(none yet)
+**Resolution:** Keep `python-jose>=3.3,<4.0`. 3.5.0 has the historical CVE patches; swap surface is small (~30 LoC). Risk register R-7 stays open for monthly review.
+
+**See:** DECISION_LOG `2026-05-02 — python-jose retained at Phase 4`.
+
+---
+
+### Q9 — Refresh token: opaque + Redis lookup, or JWT + revocation list? *(resolved 2026-05-02 in Phase 4)*
+
+**Resolution:** JWT-encoded refresh tokens with a `jti` claim. The `jti` is stored in Redis (TTL = refresh TTL); on refresh we decode JWT, check Redis for jti, issue new pair, delete old jti, store new jti. On logout we delete the jti.
+
+**See:** DECISION_LOG `2026-05-02 — Refresh token: JWT-encoded with jti in Redis`.

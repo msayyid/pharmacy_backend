@@ -5,10 +5,10 @@
 
 ## Current state
 
-- **Active phase:** Phase 3 — Core Infrastructure
+- **Active phase:** Phase 4 — Identity & Authentication
 - **Status:** done
 - **Last session:** 2026-05-02
-- **Next session should:** open `CLAUDE_CODE_PROMPTS.md §9` (Phase 4 — Identity & Authentication). Run the plan-first gate: re-read `BACKEND §8 (models), §11 (repos), §12 (services), §14 (auth), §15 (errors)` and `PHARMACY §4 (identity schema)` before producing the Phase 4 plan. Phase 4 also drops `app/_ping_transient.py` and writes a migration to drop the `ping` table.
+- **Next session should:** open `CLAUDE_CODE_PROMPTS.md §10` (Phase 5 — Catalog Domain & Admin Catalog API). Plan-first gate: re-read `BACKEND §8 (models, FULLTEXT), §10 (schemas), §11 (repos), §12 (services), §13 (routers)` and `PHARMACY §5 (catalog schema)`, plus `PRODUCT §5, §8.5, §13` for behaviour.
 
 ## Phases
 
@@ -16,7 +16,7 @@
 - [x] Phase 1 — Project Foundation _(done 2026-05-02)_
 - [x] Phase 2 — Database Foundation & Alembic _(done 2026-05-02)_
 - [x] Phase 3 — Core Infrastructure _(done 2026-05-02)_
-- [ ] Phase 4 — Identity & Authentication
+- [x] Phase 4 — Identity & Authentication _(done 2026-05-02)_
 - [ ] Phase 5 — Catalog Domain & Admin Catalog API
 - [ ] Phase 6 — Inventory Domain & Admin Inventory API
 - [ ] Phase 7 — Customer Discovery (Browse & Search)
@@ -89,20 +89,49 @@ uv run python -c "from app.core.security import normalise_phone, generate_numeri
 make lint && make type && make test                # all green; 118 tests pass
 ```
 
-### After Phase 4 (placeholder — from §23.1 of CLAUDE_CODE_PROMPTS)
+### After Phase 4 (verified 2026-05-02)
 
 ```bash
-curl -X POST localhost:8000/api/v1/auth/otp/request \
-  -H 'Content-Type: application/json' \
-  -d '{"phone":"+996700123456"}'
-# read OTP from log (fake provider), then:
-curl -X POST localhost:8000/api/v1/auth/otp/verify \
-  -H 'Content-Type: application/json' \
-  -d '{"phone":"+996700123456","code":"123456"}'
-# → {access_token, refresh_token}
-curl localhost:8000/api/v1/me \
-  -H "Authorization: Bearer $ACCESS"
-# → user profile, language ru
+make docker-up-test                                   # mysql-test :3307 + redis :6379
+set -a && source .env.test && set +a
+uv run alembic upgrade head                           # 3 migrations apply
+
+uv run uvicorn app.main:app --port 8765 --log-level info > /tmp/uvicorn.log 2>&1 &
+
+# OTP request
+curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"phone":"+996700123456"}' \
+  http://localhost:8765/api/v1/auth/otp/request
+# → {"sent":true,"expires_in_seconds":300}
+
+# Pull OTP code from log (FakeSmsQueue logs it as JSON)
+CODE=$(grep "sms_enqueued" /tmp/uvicorn.log | tail -1 \
+  | python3 -c "import sys,json,re; d=json.loads(sys.stdin.read()); m=re.search(r'(\d{4,})',d['body']); print(m.group(1))")
+
+# Verify → tokens
+RESP=$(curl -s -X POST -H "Content-Type: application/json" \
+  -d "{\"phone\":\"+996700123456\",\"code\":\"$CODE\"}" \
+  http://localhost:8765/api/v1/auth/otp/verify)
+ACCESS=$(echo $RESP | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+REFRESH=$(echo $RESP | python3 -c "import sys,json; print(json.load(sys.stdin)['refresh_token'])")
+
+# /me
+curl -s -H "Authorization: Bearer $ACCESS" http://localhost:8765/api/v1/me
+# → {"id":"...","phone":"+996700123456","preferred_language":"ru","is_phone_verified":true,...}
+
+# Refresh rotates; old refresh now fails
+curl -s -X POST -H "Content-Type: application/json" \
+  -d "{\"refresh_token\":\"$REFRESH\"}" \
+  http://localhost:8765/api/v1/auth/refresh
+# → new pair
+
+curl -s -X POST -H "Content-Type: application/json" \
+  -d "{\"refresh_token\":\"$REFRESH\"}" \
+  http://localhost:8765/api/v1/auth/refresh
+# → 401 refresh_revoked
+
+make test               # 170 tests pass (118 from Phases 1–3 + 52 new in Phase 4)
+make lint && make type  # both clean
 ```
 
 ### After Phase 8 (placeholder — extends Phase 4)
@@ -128,7 +157,9 @@ Add: "smoke recipe runs against a fresh DB end-to-end" and the OWASP audit check
 
 > Things noticed during Phase 0 reading that are out of MVP scope or non-urgent. Move to a phase backlog or to `OPEN_QUESTIONS.md` when they become decisions.
 
-- [ ] **Phase 4 cleanup of `app/_ping_transient.py`** — delete the file, remove its import line in `migrations/env.py`, write a `DROP TABLE ping` migration. The placeholder shipped in Phase 2 to seed the migration pipeline.
+- [x] ~~Phase 4 cleanup of `app/_ping_transient.py`~~ — done 2026-05-02 (Phase 4.1 dropped the table + deleted the file).
+- [ ] **TOTP enforcement** — `admin_users.mfa_secret` column exists but Phase 4 does not verify TOTP codes. Add `pyotp` dep + verification logic when MFA enrolment UX lands (Phase 1.5+).
+- [ ] **Phone change flow** — deferred per `PRODUCT §17.3` (Phase 1.5).
 - [ ] Cyrillic synonym table (Soviet-era brand names → modern INN, e.g. `анальгин → метамизол`) — content seed in Phase 5 or Phase 7. Bishkek-specific must-haves: `анальгин`, `цитрамон`, `аспирин-кардио`. Coverage: at least 50 brand→ingredient pairs by launch.
 - [ ] Recall workflow as a real feature with `recalled` flag on batches — surfaced in `PRODUCT §5.6` as Phase 2; for MVP, recall = manual `damaged` movement with reason "recall: <batch_number>". Add to Phase 2 backlog.
 - [ ] Reservation timeout job cadence — see OPEN_QUESTIONS Q11. Default plan: single ARQ cron every 5 min checking both 24h-pending and 30min-card thresholds. Confirm at Phase 11.
@@ -142,7 +173,8 @@ Add: "smoke recipe runs against a fresh DB end-to-end" and the OWASP audit check
 ## Active blockers
 
 - None for Phase 2.
-- **Open questions touching Phase 2:** Q8 (synonym storage shape — JSON vs junction table) is decided as JSON for now; revisit if junction admin UX becomes painful. Q5 (filename) still cosmetic. Q6 (`python-jose` vs PyJWT) still deferred to Phase 4.
+- **Resolved this phase:** Q6 (`python-jose` retained — see DECISION_LOG); Q9 (refresh token = JWT-encoded + jti in Redis — implemented).
+- **Open questions remaining:** Q1 (30-day shelf-at-dispatch — Phase 8); Q3 (COD high-value floor — Phase 8); Q5 (filename — cosmetic); Q11 (reservation timeout cron — Phase 11); Q12 (Bishkek city match — Phase 8). Q8 (synonym JSON) confirmed.
 
 ## In-progress TodoWrite items
 

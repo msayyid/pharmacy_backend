@@ -13,6 +13,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project initialised; specs and master plan in place.
 - `BUILD_PLAN.md`, `BUILD_PROGRESS.md`, `OPEN_QUESTIONS.md` (12 substantive items), `RISKS.md` (top-10 ranked + watching list), `DECISION_LOG.md` template, this file.
 
+#### Phase 4 — Identity & Authentication (2026-05-02)
+- **Domain:** identity (`User`, `UserAddress`, `OtpCode`, `AdminUser`, `AdminSession`) + minimal `Branch` model (Phase 6 expands inventory).
+- **Migrations:** two new revisions — `drop_ping_placeholder` removes the Phase 2 stand-in; `create_identity_tables` adds 6 tables with the partial-unique generated-column trick on `user_addresses.default_user_id`.
+- **Repositories** (5): `UserRepository`, `UserAddressRepository`, `OtpRepository`, `AdminUserRepository`, `AdminSessionRepository`. Plus minimal `BranchRepository` for inventory.
+- **Services** (4): `OtpService` (request + verify with 3 rate-limit composes), `AuthService` (JWT refresh rotation + logout), `AccountService` (CRUD + default-toggle handling), `AdminAuthService` (login + 5-attempt lockout + session lookup).
+- **Schemas** (13): OtpRequest/Verify, TokenPair, Refresh, Logout, UserMeRead/Update, Address Create/Update/Read, AdminLogin, AdminMeRead. Phone normalisation via `normalise_phone` field validator; `EmailStr` (added `email-validator` dep).
+- **Dependencies** (`app/domain/identity/dependencies.py`): `get_current_user` (Bearer JWT), `get_current_admin` (cookie), `require_role(*roles)`, `require_branch_access(param)`, plus `CurrentUser` / `CurrentAdmin` type aliases.
+- **DI factories** (`app/api/deps.py`): repositories + services + `TokenIssuer`.
+- **SMS abstraction**: `SmsMessage`, `SmsQueue` Protocol (`app/integrations/sms/base.py`), `FakeSmsQueue` that logs and records (`app/integrations/sms/fake.py`). Phase 11 will wire ARQ; Phase 10 lands the real Nikita adapter.
+- **Routes**:
+  - Customer (`/api/v1/auth`): `POST /otp/request`, `POST /otp/verify`, `POST /refresh`, `POST /logout`.
+  - Customer (`/api/v1/me`): `GET`, `PATCH`, `/me/addresses` CRUD (5 endpoints).
+  - Admin (`/api/admin/v1/auth`): `POST /login` (sets HttpOnly cookie), `POST /logout`, `GET /me`.
+- **52 new tests (170 total)**:
+  - Repository: 11 tests in `test_identity_repos.py` — phone uniqueness, address default-uniqueness via generated column, OTP filters (consumed/expired/most-recent), owner-scoped lookup, attempts increment.
+  - Service unit: 19 tests — `test_otp_service.py` (8: request/verify happy paths + rate limits + max attempts + expired + consumed-once), `test_auth_service.py` (5: rotate, unknown-jti, expired, logout, idempotent-on-garbage), `test_admin_auth_service.py` (7: success, wrong-pw counter, lockout at 5, reset on success, inactive rejected, token round-trip, logout revokes).
+  - E2E: 22 tests — `test_otp_flow.py` (4), `test_otp_edges.py` (4), `test_refresh_logout.py` (3), `test_addresses.py` (4 incl. owner-scoping + default toggle), `test_admin_auth.py` (6).
+
 #### Phase 3 — Core Infrastructure (2026-05-02)
 - **Redis client** in `app/core/redis.py` — `init_redis`/`close_redis`/`get_redis` lifecycle, idempotent init, ``decode_responses=True`` so reads come back as ``str``. Wired into FastAPI lifespan.
 - **i18n** in `app/core/i18n.py` — `t(key, lang, **vars)` with fallback chain (lang → default → key + warning), variable interpolation via ``str.format``, lazy JSON loading cached in module dict, `clear_translation_cache()` helper for tests.

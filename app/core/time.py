@@ -36,3 +36,14 @@ def to_bishkek(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt.astimezone(BISHKEK_TZ)
+
+
+def ensure_utc(dt: datetime) -> datetime:
+    """Return ``dt`` as a tz-aware UTC datetime.
+
+    MySQL's ``DATETIME(fsp=6)`` stores tz-naive timestamps (we always write
+    UTC). When SQLAlchemy reads them back, the result is naive. Comparing
+    a naive datetime to ``utcnow()`` (aware) raises ``TypeError``; this
+    helper closes that gap by attaching UTC tzinfo when missing.
+    """
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)

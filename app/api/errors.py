@@ -70,13 +70,22 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation(_request: Request, exc: RequestValidationError) -> ORJSONResponse:
+        # Strip pydantic's `ctx.error` (an Exception instance) and `url` —
+        # neither is orjson-serializable. Stringify ctx values defensively.
+        sanitized: list[dict[str, Any]] = []
+        for err in exc.errors():
+            clean: dict[str, Any] = {k: v for k, v in err.items() if k not in ("ctx", "url")}
+            ctx = err.get("ctx")
+            if isinstance(ctx, dict):
+                clean["ctx"] = {k: str(v) for k, v in ctx.items()}
+            sanitized.append(clean)
         return ORJSONResponse(
             status_code=422,
             content=_problem(
                 422,
                 "validation_error",
                 "Invalid request",
-                errors=exc.errors(),
+                errors=sanitized,
             ),
         )
 

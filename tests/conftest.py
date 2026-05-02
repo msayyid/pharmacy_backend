@@ -57,13 +57,45 @@ def _reset_settings_cache() -> Iterator[None]:
 
 @pytest_asyncio.fixture
 async def client() -> AsyncIterator[AsyncClient]:
-    """HTTP client against a fresh FastAPI app instance."""
+    """HTTP client against a fresh FastAPI app instance.
+
+    Overrides the ``get_db`` dependency with a per-test NullPool-engine
+    session factory, mirroring the Phase 2 ``session`` fixture pattern.
+    Without this, the route handler reuses the module-level engine whose
+    pooled connections were bound to a prior test's event loop, raising
+    "Future attached to a different loop" on subsequent tests.
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from app.core.config import get_settings
+    from app.core.db import get_db
     from app.main import create_app
 
-    app = create_app()
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
+    test_engine = create_async_engine(
+        str(get_settings().mysql_dsn),
+        poolclass=NullPool,
+        connect_args={"charset": "utf8mb4"},
+    )
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+
+    async def _get_db_override() -> AsyncIterator[AsyncSession]:
+        async with factory() as s:
+            try:
+                yield s
+                await s.commit()
+            except Exception:
+                await s.rollback()
+                raise
+
+    try:
+        app = create_app()
+        app.dependency_overrides[get_db] = _get_db_override
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c
+    finally:
+        await test_engine.dispose()
 
 
 # ─── Phase 2 — DB fixtures ────────────────────────────────────────────────────

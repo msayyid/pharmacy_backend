@@ -300,6 +300,124 @@ Never raises — translation issues surface as observable log signals, not 500 r
 
 ---
 
+### 2026-05-02 — `python-jose` retained at Phase 4 (resolves OPEN_QUESTIONS Q6)
+**Phase:** 4
+**Context:** Q6 deferred from Phase 0 / Phase 3. Phase 4 wires `TokenIssuer` for the customer flow.
+**Decision:** Keep `python-jose>=3.3,<4.0`. 3.5.0 carries the historical CVE patches; the swap surface is small (~30 LoC in ``app/core/security.py``). Risk register R-7 stays open for monthly review.
+**Alternatives considered:** Switch to PyJWT pre-emptively. Higher cost, no fresh CVE evidence today.
+**Rationale:** Maturity of the existing implementation + small swap cost + no current vulnerability outweighs the perceived maintenance lag. If a CVE drops, swap is one PR.
+**Trade-offs:** Continuing supply-chain risk, monitored.
+**Reversibility:** Easy.
+**References:** OPEN_QUESTIONS Q6; RISKS R-7.
+
+---
+
+### 2026-05-02 — Refresh token: JWT-encoded with ``jti`` in Redis (resolves Q9)
+**Phase:** 4
+**Context:** Q9 asked whether refresh tokens should be opaque (Redis-only) or JWT-encoded with a Redis-backed jti.
+**Decision:** JWT-encoded refresh tokens with a `jti` claim. The `jti` is stored in Redis under ``v1:session:refresh:{jti}`` (TTL = refresh TTL). On refresh: decode JWT → check Redis for jti → issue new pair → delete old jti → store new jti. On logout: delete the jti.
+**Alternatives considered:** Opaque refresh + DB row. JWT only (no Redis) — no revocation.
+**Rationale:** JWT signature provides authenticity proof without DB hit; Redis presence is the actual revocation mechanism. Best of both: stateless verify + revocable.
+**Trade-offs:** Two layers to reason about (JWT + Redis). On Redis flush, all refresh tokens become invalid (acceptable — users re-OTP).
+**Reversibility:** Implementation localised in `AuthService` + `OtpService`.
+**References:** `app/domain/identity/services.py`; OPEN_QUESTIONS Q9.
+
+---
+
+### 2026-05-02 — `user_addresses.user_id` FK uses ``ON DELETE RESTRICT`` (deviates from PHARMACY §4.2's ``CASCADE``)
+**Phase:** 4
+**Context:** PHARMACY §4.2 specifies ``ON DELETE CASCADE``. We need a STORED generated column (`default_user_id`) that references `user_id` to enforce the "one default address per user" UNIQUE workaround (BACKEND §6.5). MySQL forbids a STORED generated column from depending on a column whose FK uses CASCADE / SET NULL / SET DEFAULT (causes ``ERROR 1215: Cannot add foreign key constraint`` at DDL time). Empirically confirmed in Phase 4.2.
+**Decision:** Use ``ON DELETE RESTRICT`` for `user_addresses.user_id`.
+**Alternatives considered:** Drop the generated-column trick and enforce default-uniqueness in app code (race-prone). Use a VIRTUAL generated column (slower, doesn't help — same restriction).
+**Rationale:** Users are soft-deleted (deleted_at), so RESTRICT effectively never fires; ORM-level `cascade="all, delete-orphan"` cleans up addresses before any hard delete. RESTRICT is also a defensive default — prevents accidental orphaning.
+**Trade-offs:** Hard-delete of a user with addresses requires explicit cleanup (already handled by ORM cascade).
+**Reversibility:** Easy if MySQL relaxes the rule.
+**References:** `app/domain/identity/models.py:UserAddress`; PHARMACY §4.2; BACKEND §6.5.
+
+---
+
+### 2026-05-02 — `branches` table created in Phase 4 (despite Phase 6 owning inventory)
+**Phase:** 4
+**Context:** `admin_users.branch_id REFERENCES branches(id)`. Without `branches`, the FK fails. Phase 6 covers the rest of inventory (`branch_products`, `inventory_batches`, `stock_movements`) but the table itself is needed earlier.
+**Decision:** Land the full PHARMACY §6.1 `branches` table in Phase 4's migration. Phase 6 will not redefine it.
+**Alternatives considered:** Stub branches as a minimal table now and ALTER in Phase 6. More migrations, more risk.
+**Rationale:** PHARMACY §13.2 migration order itself puts `branches` before `admin_users`, so we're matching the spec.
+**Trade-offs:** Phase 4 carries one piece of "inventory" work.
+**Reversibility:** N/A.
+**References:** `migrations/versions/20260502_1631_create_identity_tables.py`; PHARMACY §6.1, §13.2.
+
+---
+
+### 2026-05-02 — Failed-login counter committed BEFORE raising AuthenticationError
+**Phase:** 4
+**Context:** `BACKEND §11/§12` rule: services don't commit; the request boundary commits via `get_db`, which rolls back on exception. But the lockout counter MUST persist across failed-login exceptions — otherwise `failed_login_count` resets on every wrong password, and the 5-attempt lockout never fires.
+**Decision:** In `AdminAuthService.login_with_password`, after `increment_failed_login` (and possibly `set_locked_until`), call ``await self.admins.session.commit()`` BEFORE raising `AuthenticationError`. Then `get_db`'s exception rollback is a no-op on the now-committed session (start-then-rollback an empty transaction).
+**Alternatives considered:** Use a separate session/engine for the increment (heavier; requires opening a side-channel transaction). Use SAVEPOINT (doesn't survive parent rollback). Catch the exception in the route and commit before re-raising (couples auth flow with route).
+**Rationale:** The cleanest place for a security-critical side effect is in the service that knows about the security context. Documented exception to the broader "services don't commit" rule.
+**Trade-offs:** A second commit-then-rollback path; tested empirically — works on MySQL InnoDB.
+**Reversibility:** Easy.
+**References:** `app/domain/identity/services.py:AdminAuthService.login_with_password`; BACKEND §11.3, §12.
+
+---
+
+### 2026-05-02 — `email-validator` added (for `pydantic.EmailStr`)
+**Phase:** 4
+**Context:** `pydantic.EmailStr` requires `email-validator`. Used for `users.email` and `admin_users.email`.
+**Decision:** Add `email-validator>=2.2,<3.0` to runtime deps. Updated `BACKEND §2`-style pin in `pyproject.toml`.
+**Alternatives considered:** Plain `str` + custom validator. More code, less robust.
+**Rationale:** Small, well-maintained package; standard pydantic idiom.
+**Reversibility:** Easy.
+**References:** `pyproject.toml`; OPEN_QUESTIONS no item.
+
+---
+
+### 2026-05-02 — TOTP MFA enforcement deferred from Phase 4
+**Phase:** 4
+**Context:** PRODUCT §19.3: "For MVP, MFA optional." `admin_users.mfa_secret` column exists; Phase 4 admin login does NOT verify TOTP codes when `mfa_secret` is set.
+**Decision:** Phase 4 is email + password only. The `mfa_secret` column is preserved; if it's set, a warning logs but the verify is bypassed. A future phase (Phase 1.5+) adds `pyotp` and the verification path.
+**Alternatives considered:** Add `pyotp` now and verify when `mfa_secret` is set. Adds a dep without enrolment UX.
+**Rationale:** Spec explicitly defers; avoiding `pyotp` keeps the dep set tight per project rule "smallest possible package."
+**Trade-offs:** A prematurely-set `mfa_secret` doesn't enforce until later phase.
+**Reversibility:** Easy.
+**References:** `app/domain/identity/services.py:AdminAuthService`; PRODUCT §19.3.
+
+---
+
+### 2026-05-02 — E2E `client` fixture overrides `get_db` with NullPool engine
+**Phase:** 4
+**Context:** Same root cause as Phases 2/3 — pytest-asyncio function-scoped event loops collide with module-level pooled connections. The route handler uses `app.core.db.engine` via `get_db`; the second test on a new loop hits "Future attached to a different loop" inside Starlette middleware.
+**Decision:** `tests/conftest.py:client` fixture builds a fresh `create_async_engine(..., poolclass=NullPool)` per test, wraps it in an `async_sessionmaker`, and registers it as a `dependency_override` for `get_db`. Disposes at fixture teardown.
+**Alternatives considered:** Session-scoped event loop (fragile across versions); manual lifespan invocation (`asgi-lifespan` LifespanManager — adds complexity).
+**Rationale:** Mirrors the existing per-test NullPool pattern from Phase 2/3 (`session` fixture and `redis_clean`). Consistent project-wide test posture.
+**Trade-offs:** Each E2E request opens a fresh DB connection. Negligible at this scale.
+**Reversibility:** Easy.
+**References:** `tests/conftest.py:client`.
+
+---
+
+### 2026-05-02 — Pydantic validation errors strip `ctx.error` for orjson serialisation
+**Phase:** 4
+**Context:** When a `field_validator` raises `ValueError`, pydantic stores the exception in `ctx.error`. `RequestValidationError.errors()` returns this Exception object as-is. `orjson.dumps` can't serialise Exception → 500 error in our handler.
+**Decision:** In `app/api/errors.py:_validation`, strip `ctx` and `url` keys, stringify any remaining `ctx` dict values defensively, before passing to `_problem`.
+**Alternatives considered:** Use `pydantic.ValidationError.errors(include_context=False)` — works only on `ValidationError`, not the FastAPI subclass. Custom `default=` for orjson — more invasive.
+**Rationale:** Two-line fix in the handler. Errors stay informative (still shows `loc`, `msg`, `type`) without leaking exception objects.
+**Reversibility:** Easy.
+**References:** `app/api/errors.py:register_exception_handlers`.
+
+---
+
+### 2026-05-02 — `ensure_utc(dt)` helper for naive-vs-aware datetime comparisons
+**Phase:** 4
+**Context:** MySQL `DATETIME(fsp=6)` reads come back tz-naive. Our `utcnow()` is tz-aware. Comparing the two raises `TypeError: can't compare offset-naive and offset-aware datetimes`. Bit us in `AdminAuthService.login_with_password` checking `admin.locked_until > utcnow()`.
+**Decision:** Added `ensure_utc(dt)` to `app/core/time.py` — attaches UTC tzinfo if naive, returns as-is if already aware. Use this for any Python-level datetime comparison against `utcnow()`.
+**Alternatives considered:** Switch all `utcnow()` to naive UTC (project-wide convention shift). Use a SQLAlchemy type adapter that attaches UTC on read (more invasive).
+**Rationale:** Smallest possible fix; makes the convention explicit at use sites.
+**Trade-offs:** Need to remember to call `ensure_utc` whenever comparing DB-read datetimes against `utcnow()`. Caught at runtime if forgotten.
+**Reversibility:** Easy.
+**References:** `app/core/time.py:ensure_utc`.
+
+---
+
 ### 2026-05-02 — Test MySQL on port 3307 (tmpfs); dev MySQL on 3306 (volume)
 **Phase:** 1
 **Context:** Tests should not contend with dev DB and should tear down fast.

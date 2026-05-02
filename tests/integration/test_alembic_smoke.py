@@ -26,7 +26,7 @@ from app.core.config import get_settings
 pytestmark = pytest.mark.integration
 
 
-async def _ping_table_exists() -> bool:
+async def _users_table_exists() -> bool:
     """Query via a fresh NullPool engine so each call is loop-safe."""
     e = create_async_engine(
         str(get_settings().mysql_dsn),
@@ -36,7 +36,7 @@ async def _ping_table_exists() -> bool:
     try:
         session_factory = async_sessionmaker(e, expire_on_commit=False)
         async with session_factory() as s:
-            r = await s.execute(text("SHOW TABLES LIKE 'ping'"))
+            r = await s.execute(text("SHOW TABLES LIKE 'users'"))
             return r.first() is not None
     finally:
         await e.dispose()
@@ -52,13 +52,13 @@ async def test_alembic_round_trip(alembic_config: Config) -> None:
     """``downgrade base`` → ``upgrade head`` → ``downgrade base`` → restore head."""
     try:
         await _alembic("downgrade", alembic_config, "base")
-        assert not await _ping_table_exists(), "ping should be gone after downgrade base"
+        assert not await _users_table_exists(), "users should be gone after downgrade base"
 
         await _alembic("upgrade", alembic_config, "head")
-        assert await _ping_table_exists(), "ping should exist after upgrade head"
+        assert await _users_table_exists(), "users should exist after upgrade head"
 
         await _alembic("downgrade", alembic_config, "base")
-        assert not await _ping_table_exists(), "ping should be gone after second downgrade"
+        assert not await _users_table_exists(), "users should be gone after second downgrade"
     finally:
         # Restore the session-scope expectation: DB is at head.
         await _alembic("upgrade", alembic_config, "head")
