@@ -5,11 +5,11 @@
 
 ## Current state
 
-- **Active phase:** Phase 8 — Cart, Checkout & Place-Order (FEFO) _(complete)_
-- **Status:** **complete** — 396 tests pass (incl. 30-loop concurrent place-order); mypy --strict + ruff clean across 90 source files.
-- **Last session:** 2026-05-02
-- **Sub-phases done:** 8.1 (Cart/Order/OrderItem/OrderStatusHistory/OrderSequence models + migration with `chk_orders_total` / `chk_order_items_total` via op.execute, plus deferred `fk_sm_order` lifted), 8.2 (4 repositories + atomic OrderSequenceRepository), 8.3 (request/response schemas + CartService with merge-on-login), 8.4 (CheckoutService.quote + place_order critical transaction; customer OrderService list/get/cancel/reorder), 8.5 (3 customer route modules + DI + guest-cart cookie resolver), 8.6 (57 new tests: 8 cart unit + 8 checkout unit + 6 order unit + 32-loop concurrency + 3 e2e), 8.7 (hand-off + commit).
-- **Next session should:** start Phase 9 — Admin Order Lifecycle, Reports & Audit. Re-read `PRODUCT §7.4–7.6, §8.7–8.9, §9` (state machine), `PHARMACY §7.5, §11.5–11.6`, `BACKEND §15`. Admin order queue + picking screen + status transitions with side effects + sales/expiring/low-stock reports + audit-log viewer.
+- **Active phase:** Phase 9 — Admin Order Lifecycle, Reports & Audit _(complete)_
+- **Status:** **complete** — 428 tests pass; mypy --strict + ruff clean across 98 source files.
+- **Last session:** 2026-05-03
+- **Sub-phases done:** 9.1 (Payments stub model + `courier_name` / `courier_phone` columns on Order + migration `d8499a5e7876` round-trips clean), 9.2 (`OrderLifecycleService` with `ALLOWED_TRANSITIONS` config-dict state machine + side-effect hooks: release / convert-to-sold / restock-cancelled-dispatch / record-courier / refund-payment-row; plus `InventoryService.restock_for_cancelled_dispatch` that walks each `sold` movement and pairs a `received` reversal in the original batch), 9.3 (admin schemas: `AdminOrderListItem`, `AdminOrderDetail`, `CancelByAdminRequest`, `DispatchRequest`, `RefundRequest`, `SwapBatchRequest`, `AuditLogEntry`; `ReportService` with 5-min TTL cache, sales summary excluding cancelled/refunded, top_products, CSV streaming with utf-8 BOM), 9.4 (3 admin route modules: `orders.py` — list+detail+confirm/start-preparing/mark-ready/dispatch/mark-delivered/cancel/refund(Idem-Key)/swap-batch; `reports.py` — sales + top-products with `format=json|csv`; `audit.py` — filtered viewer; DI factories for lifecycle + reports), 9.5 (32 new tests: 14 lifecycle unit + 4 reports unit + 5 audit-coverage integration + 5 lifecycle e2e + 4 reports e2e), 9.6 (hand-off + commit).
+- **Next session should:** start Phase 10 — Integrations: SMS, Payments, Storage. Re-read `BACKEND §22`, `PRODUCT §14` (SMS), `PRODUCT §11` (payments), `PHARMACY §7` for the deliveries/payments table that may graduate from the Order columns and Payment stub. Bring up real Nikita SMS adapter (sandbox), Freedom Pay scaffold + webhook, Cloudflare R2 storage adapter; behind a Protocol with fake/real factories per `app/integrations/<x>/{base,real,fake,factory}.py`.
 
 ## Phases
 
@@ -22,9 +22,7 @@
 - [x] Phase 6 — Inventory Domain & Admin Inventory API _(done 2026-05-02)_
 - [x] Phase 7 — Customer Discovery (Browse & Search) _(done 2026-05-02)_
 - [x] Phase 8 — Cart, Checkout & Place-Order (FEFO) _(done 2026-05-02)_
-- [ ] Phase 7 — Customer Discovery (Browse & Search)
-- [ ] Phase 8 — Cart, Checkout & Place-Order (FEFO)
-- [ ] Phase 9 — Admin Order Lifecycle, Reports & Audit
+- [x] Phase 9 — Admin Order Lifecycle, Reports & Audit _(done 2026-05-03)_
 - [ ] Phase 10 — Integrations: SMS, Payments, Storage
 - [ ] Phase 11 — Background Jobs & Scheduled Tasks
 - [ ] Phase 12 — Hardening & Launch Readiness
@@ -272,19 +270,78 @@ make test                # 396 tests pass (339 prior + 57 new in Phase 8)
 make lint && make type   # both clean
 ```
 
-### After Phase 9 (placeholder)
+### After Phase 9 (verified 2026-05-03)
 
 ```bash
-# Browse, add to cart, checkout COD
-curl localhost:8000/api/v1/categories
-curl -X POST localhost:8000/api/v1/cart/items \
-  -H "Authorization: Bearer $ACCESS" \
-  -d '{"product_id":"...","quantity":2}'
-curl -X POST localhost:8000/api/v1/checkout/place \
-  -H "Authorization: Bearer $ACCESS" \
-  -H "Idempotency-Key: $(uuidgen)" \
-  -d '{"address_id":1,"payment_method":"cash_on_delivery","delivery_method":"delivery"}'
-# → {order_number: "PH-2026-000001", payment_redirect_url: null}
+make docker-up-test                                    # mysql-test :3307 + redis
+set -a && source .env.test && set +a
+uv run alembic upgrade head                            # 8 migrations now (+ payments + courier columns)
+
+# Seed: catalog → inventory → ready for orders.
+uv run python -m dev.fixtures.catalog.seed
+uv run python -m dev.fixtures.inventory.seed
+
+uv run uvicorn app.main:app --port 8765 > /tmp/uvicorn.log 2>&1 &
+sleep 1
+
+# 1. Customer places an order (Phase 8 flow)
+curl -sc /tmp/cookies.txt http://localhost:8765/api/v1/cart > /dev/null
+SLUG=$(curl -s "http://localhost:8765/api/v1/categories/pain-relief/products" -H "Accept-Language: ru" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['items'][0]['slug'])")
+PID=$(curl -s "http://localhost:8765/api/v1/products/$SLUG" -H "Accept-Language: ru" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+curl -sb /tmp/cookies.txt -c /tmp/cookies.txt -X POST http://localhost:8765/api/v1/cart/items \
+  -H "Content-Type: application/json" -d "{\"product_id\":\"$PID\",\"quantity\":2}" > /dev/null
+
+PHONE="+996700123456"
+curl -s -X POST http://localhost:8765/api/v1/auth/otp/request -H "Content-Type: application/json" -d "{\"phone\":\"$PHONE\"}" > /dev/null
+CODE=$(grep "sms_enqueued" /tmp/uvicorn.log | tail -1 \
+  | python3 -c "import sys,json,re; d=json.loads(sys.stdin.read()); print(re.search(r'(\d{4,})', d['body']).group(1))")
+ACCESS=$(curl -s -X POST http://localhost:8765/api/v1/auth/otp/verify -H "Content-Type: application/json" \
+  -d "{\"phone\":\"$PHONE\",\"code\":\"$CODE\"}" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+ORDER_RESP=$(curl -s -X POST http://localhost:8765/api/v1/checkout/place \
+  -H "Authorization: Bearer $ACCESS" -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"delivery_method":"delivery","payment_method":"cash_on_delivery","recipient_name":"Тест","recipient_phone":"+996700123456","delivery_address":"мкр Асанбай 12-45"}')
+ORDER_ID=$(echo $ORDER_RESP | python3 -c "import sys,json; print(json.load(sys.stdin)['order_id'])")
+echo "Customer placed order $ORDER_ID"
+
+# 2. Admin login (super_admin)
+make seed-admin                                        # creates ops@pharmacy.kg / admin123 if missing
+ADMIN_COOKIE=$(curl -si -X POST http://localhost:8765/api/admin/v1/auth/login \
+  -H "Content-Type: application/json" -d '{"email":"ops@pharmacy.kg","password":"admin123"}' \
+  | grep -i 'set-cookie: admin_session' | sed 's/.*admin_session=\([^;]*\).*/\1/')
+
+# 3. Admin walks order through lifecycle
+for action in confirm start-preparing mark-ready; do
+  curl -s -X POST -b "admin_session=$ADMIN_COOKIE" \
+    http://localhost:8765/api/admin/v1/orders/$ORDER_ID/$action | python3 -c "import sys,json; print('after $action:', json.load(sys.stdin)['status'])"
+done
+
+# 4. Dispatch with courier; then deliver
+curl -s -X POST -b "admin_session=$ADMIN_COOKIE" \
+  -H "Content-Type: application/json" \
+  -d '{"courier_name":"Курьер Иван","courier_phone":"+996770111222"}' \
+  http://localhost:8765/api/admin/v1/orders/$ORDER_ID/dispatch | python3 -m json.tool | grep -E "status|courier"
+
+curl -s -X POST -b "admin_session=$ADMIN_COOKIE" \
+  http://localhost:8765/api/admin/v1/orders/$ORDER_ID/mark-delivered | python3 -c "import sys,json; print('final:', json.load(sys.stdin)['status'])"
+
+# 5. Sales report (CSV)
+TODAY=$(date -u -v-1d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u --date='1 day ago' +"%Y-%m-%dT%H:%M:%SZ")
+TMW=$(date -u -v+1d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u --date='1 day' +"%Y-%m-%dT%H:%M:%SZ")
+curl -s -b "admin_session=$ADMIN_COOKIE" \
+  "http://localhost:8765/api/admin/v1/reports/sales?branch_id=1&from_dt=$TODAY&to_dt=$TMW&format=csv" \
+  | head -5
+
+# 6. Audit viewer (last 5 entries)
+curl -s -b "admin_session=$ADMIN_COOKIE" \
+  "http://localhost:8765/api/admin/v1/audit?page=1&page_size=5" | python3 -m json.tool | head -30
+
+ORDER_CONCURRENT_LOOPS=30 uv run pytest tests/integration/test_order_concurrency.py
+make test                # 428 tests pass (396 prior + 32 new in Phase 9)
+make lint && make type   # both clean
 ```
 
 ### After Phase 12
@@ -355,9 +412,9 @@ synchronously; ≥ 501 returns 413 ("use the worker — Phase 11").
 
 ## Active blockers
 
-- None for Phase 2.
-- **Resolved this phase:** Q6 (`python-jose` retained — see DECISION_LOG); Q9 (refresh token = JWT-encoded + jti in Redis — implemented).
-- **Open questions remaining:** Q1 (30-day shelf-at-dispatch — Phase 8); Q3 (COD high-value floor — Phase 8); Q5 (filename — cosmetic); Q11 (reservation timeout cron — Phase 11); Q12 (Bishkek city match — Phase 8). Q8 (synonym JSON) confirmed.
+- None for Phase 9.
+- **Resolved through Phase 9:** Q6 (`python-jose` retained — see DECISION_LOG); Q9 (refresh token = JWT-encoded + jti in Redis — implemented); Q1 / Q3 / Q12 implicitly satisfied via Phase 8 place-order rules.
+- **Open questions remaining:** Q5 (filename — cosmetic); Q11 (reservation timeout cron — Phase 11). Q8 (synonym JSON) confirmed.
 
 ## In-progress TodoWrite items
 

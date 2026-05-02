@@ -66,6 +66,7 @@ from app.domain.ops.repositories import (
 from app.domain.ops.services import AdminAuditLogService
 from app.domain.orders.cart_service import CartService
 from app.domain.orders.checkout_service import CheckoutService
+from app.domain.orders.lifecycle import OrderLifecycleService
 from app.domain.orders.order_service import OrderService
 from app.domain.orders.repositories import (
     CartRepository,
@@ -73,6 +74,7 @@ from app.domain.orders.repositories import (
     OrderSequenceRepository,
     OrderStatusHistoryRepository,
 )
+from app.domain.reports.services import ReportService
 from app.integrations.sms.base import get_sms_queue
 
 # ─── Type aliases ─────────────────────────────────────────────────────────────
@@ -464,3 +466,32 @@ async def get_cart_owner(
 
 
 CartOwner = Annotated[tuple[User | None, str | None], Depends(get_cart_owner)]
+
+
+# ─── Phase 9 — Admin order lifecycle + reports ──────────────────────────────
+
+
+def get_order_lifecycle_service(
+    session: DbSession,
+    orders: Annotated[OrderRepository, Depends(get_order_repository)],
+    order_history: Annotated[OrderStatusHistoryRepository, Depends(get_order_history_repository)],
+    batches: Annotated[InventoryBatchRepository, Depends(get_inventory_batch_repository)],
+    branch_products: Annotated[BranchProductRepository, Depends(get_branch_product_repository)],
+    movements: Annotated[StockMovementRepository, Depends(get_stock_movement_repository)],
+    inventory: Annotated[InventoryService, Depends(get_inventory_service)],
+    audit: Annotated[AdminAuditLogService, Depends(get_admin_audit_service)],
+) -> OrderLifecycleService:
+    return OrderLifecycleService(
+        session=session,
+        orders=orders,
+        order_history=order_history,
+        batches=batches,
+        branch_products=branch_products,
+        movements=movements,
+        inventory=inventory,
+        audit=audit,
+    )
+
+
+def get_report_service(session: DbSession) -> ReportService:
+    return ReportService(session=session)

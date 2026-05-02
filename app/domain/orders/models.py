@@ -243,6 +243,11 @@ class Order(Base, TimestampMixin):
     internal_notes: Mapped[str | None] = mapped_column(Text)
     cancel_reason: Mapped[str | None] = mapped_column(Text)
 
+    # Courier hand-off (Phase 9). Phase 10 moves these to a dedicated
+    # ``deliveries`` table per PHARMACY §7.7; for MVP they live inline.
+    courier_name: Mapped[str | None] = mapped_column(String(160))
+    courier_phone: Mapped[str | None] = mapped_column(String(20))
+
     placed_at: Mapped[datetime] = mapped_column(
         DATETIME(fsp=6),
         nullable=False,
@@ -405,6 +410,61 @@ class OrderSequence(Base):
 
     __table_args__ = (
         CheckConstraint("last_assigned >= 0", name="chk_order_seq_nonneg"),
+        {
+            "mysql_engine": "InnoDB",
+            "mysql_charset": "utf8mb4",
+            "mysql_collate": "utf8mb4_0900_ai_ci",
+        },
+    )
+
+
+# ─── Payments (Phase 9 stub — Phase 10 wires the real gateway) ──────────────
+
+
+class Payment(Base):
+    """One row per payment attempt or refund (PHARMACY §7.6).
+
+    ``is_refund`` distinguishes a charge from a refund row — the spec
+    is ambiguous about how to encode the difference, so we add an
+    explicit boolean flag (DECISION_LOG'd). ``amount`` is always
+    positive (CHECK ``amount > 0``).
+    """
+
+    __tablename__ = "payments"
+
+    id: Mapped[UUID] = mapped_column(GUID, primary_key=True)
+    order_id: Mapped[UUID] = mapped_column(
+        GUID,
+        ForeignKey("orders.id", name="fk_payments_order", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_transaction_id: Mapped[str | None] = mapped_column(String(120))
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="KGS")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    is_refund: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    raw_request: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    raw_response: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    failure_reason: Mapped[str | None] = mapped_column(Text)
+    paid_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6),
+        nullable=False,
+        server_default=func.utc_timestamp(6),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6),
+        nullable=False,
+        server_default=func.utc_timestamp(6),
+        onupdate=func.utc_timestamp(6),
+    )
+
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="chk_payments_amount_pos"),
+        Index("idx_payments_order_created", "order_id", "created_at"),
+        Index("idx_payments_status", "status"),
+        Index("idx_payments_refund", "is_refund", "status"),
         {
             "mysql_engine": "InnoDB",
             "mysql_charset": "utf8mb4",

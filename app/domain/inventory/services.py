@@ -505,6 +505,57 @@ class InventoryService:
             bp.reserved_quantity -= total
         await self.session.flush()
 
+    async def restock_for_cancelled_dispatch(
+        self, order_id: UUID, *, actor: AdminUser | None = None
+    ) -> None:
+        """Refused-at-door / undeliverable cancel: restore stock that
+        already moved through ``preparing → out_for_delivery`` (which
+        had decremented ``quantity_remaining`` and ``total_quantity``
+        via ``convert_reservation_to_sold``).
+
+        Walks the order's ``sold`` movements and reverses them with
+        paired ``received`` movements (PRODUCT §9.1 special case —
+        same batch if known). Per ``chk_movement_sign``, ``received``
+        carries ``quantity_change >= 0``.
+
+        Never used for ``delivered → refunded`` — returned medicine is
+        not resold (CLAUDE.md sacred invariant).
+        """
+        movements = await self.movements.list_for_order(order_id)
+        sold_movements = [m for m in movements if m.movement_type == MovementType.SOLD.value]
+        if not sold_movements:
+            return  # idempotent
+
+        bp_totals: dict[tuple[int, UUID], int] = {}
+        for m in sold_movements:
+            qty = -m.quantity_change  # sold is negative-signed
+            batch = await self.batches.get_by_id(m.inventory_batch_id)
+            if batch is None:  # pragma: no cover
+                raise NotFoundError(code="batch_not_found", batch_id=m.inventory_batch_id)
+            batch.quantity_remaining += qty
+            await self.movements.append(
+                StockMovement(
+                    inventory_batch_id=batch.id,
+                    branch_id=m.branch_id,
+                    product_id=m.product_id,
+                    movement_type=MovementType.RECEIVED.value,
+                    quantity_change=qty,
+                    quantity_after=batch.quantity_remaining,
+                    order_id=order_id,
+                    admin_user_id=actor.id if actor else None,
+                    reason="restock_after_cancelled_dispatch",
+                )
+            )
+            key = (m.branch_id, m.product_id)
+            bp_totals[key] = bp_totals.get(key, 0) + qty
+
+        for (branch_id, product_id), total in bp_totals.items():
+            bp = await self.branch_products.get_for_update(branch_id, product_id)
+            if bp is None:  # pragma: no cover
+                raise NotFoundError(code="branch_product_not_found")
+            bp.total_quantity += total
+        await self.session.flush()
+
     async def _reservation_movements(self, order_id: UUID) -> Sequence[StockMovement]:
         """All ``reserved`` movements for an order. Excludes orders that
         already moved past reservation (i.e. have a ``sold`` or

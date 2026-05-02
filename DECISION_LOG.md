@@ -840,3 +840,63 @@ Symptoms: substitutes excluded the source product's id but matched it (wrong-dir
 **Reversibility:** Easy — drop the cookie dependency and require auth at first cart write. Would break J-01.
 
 **References:** `app/api/v1/cart.py:_ensure_session_cookie`; `app/api/deps.py:get_cart_owner`; `app/domain/orders/cart_service.py:merge_guest_into_user`; PRODUCT §7.1, §F-CART-001.
+
+---
+
+### 2026-05-03 — `Payment.is_refund` boolean discriminates charges from refunds
+**Phase:** 9
+**Context:** PRODUCT §11 talks about "payments" as one stream and "refunds" as another, but the spec doesn't pin down whether they live in one table or two. Phase 9 needs a Payment-stub model so the lifecycle's `refund` transition has somewhere to write a record (Phase 10 will reconcile against Freedom Pay webhooks).
+**Decision:** Single `payments` table with `is_refund: bool` (default `false`) and the same `status` lifecycle (`pending|succeeded|failed|refunded`) for both. A successful card charge at place-order time writes one `Payment(is_refund=False, status='succeeded')` (Phase 10 will own the create); an admin refund writes one `Payment(is_refund=True, status='pending')` that the Freedom Pay webhook flips to `succeeded` once the gateway acknowledges.
+**Alternatives considered:** (a) Separate `payments` + `refunds` tables — duplicates schema and complicates `total_paid` calculations. (b) Use `amount: Decimal` with a sign convention (positive = charge, negative = refund) — cute but loses the explicit semantic and breaks the `amount > 0` CHECK that protects against zero-value rows.
+**Rationale:** One table keeps `SELECT SUM(amount) WHERE order_id=? AND is_refund=false` and the symmetric refund query trivial. The boolean reads cleaner than a sign convention for non-finance engineers picking this up later.
+**Trade-offs:** Aggregate queries always need the `is_refund` filter — easy to forget. Mitigated by naming queries `total_charged_for_order` / `total_refunded_for_order` rather than a generic `payments_for_order`.
+**Reversibility:** Easy — splitting into two tables is a routine migration; the inverse is trickier.
+**References:** `app/domain/orders/models.py:Payment`; `migrations/versions/20260502_2136_create_payments_courier_columns.py`; PRODUCT §11.
+
+---
+
+### 2026-05-03 — Courier info stays inline on `orders` for MVP; deliveries table deferred
+**Phase:** 9
+**Context:** PHARMACY §7 sketches a future `deliveries` table with courier details, route info, drop-off proof, and status. Phase 9 needs courier name/phone for the `dispatch` transition but nothing else delivery-shaped yet — no proof-of-delivery image, no route, no separate delivery status (the order's own status doubles as the delivery status until launch).
+**Decision:** Add `courier_name VARCHAR(120)` + `courier_phone VARCHAR(20)` columns directly on `orders`. Recorded by the `_record_courier` side effect on the `(preparing|ready_for_pickup) → out_for_delivery` transition. No `deliveries` table in Phase 9.
+**Alternatives considered:** Stand up the `deliveries` table now with just `courier_name` / `courier_phone` populated. Rejected as YAGNI: the table makes sense once we have route history, drop-off proof, courier accounts, or 1:N deliveries-per-order — none in MVP scope.
+**Rationale:** Two columns satisfy every Phase 9 user story. Graduating to a `deliveries` table later is a routine migration (`INSERT INTO deliveries SELECT ... FROM orders WHERE courier_name IS NOT NULL`); doing it now would carry unused tables forever if the feature stays inline.
+**Trade-offs:** Schema grows wider; a future `deliveries` table requires backfill. Order detail responses already carry courier info inline, so frontend won't need a refactor either way.
+**Reversibility:** Easy — `deliveries` migration plus drop the two columns.
+**References:** `app/domain/orders/models.py:Order` (`courier_name`, `courier_phone`); `app/domain/orders/lifecycle.py:_record_courier`; PHARMACY §7 (deliveries deferred).
+
+---
+
+### 2026-05-03 — State transitions encoded as `ALLOWED_TRANSITIONS` config dict (not a dispatch-method-per-pair)
+**Phase:** 9
+**Context:** The order state machine (PRODUCT §9 + CLAUDE.md "Order state machine" reality check) has ~12 valid transitions, each with its own RBAC, side effects, and `requires_reason` flag. Two encodings: (a) one method per transition that hard-codes its rule and runs its own side effects; (b) a single `ALLOWED_TRANSITIONS: dict[(from, to), TransitionRule]` config that drives a generic `_apply_transition` dispatcher.
+**Decision:** (b) — `ALLOWED_TRANSITIONS` dict keyed by `(from_status, to_status)`; each value is a `TransitionRule(allowed_roles, requires_reason, side_effects)`. A single private `_apply_transition` runs validation (state legality → role → reason → branch scope), then applies the status change, runs each side-effect hook, writes the audit row + status_history row, all in one transaction. Public methods (`confirm`, `cancel_by_admin`, etc.) are thin wrappers that supply `(to_status, reason)` and surface clean signatures to routes.
+**Alternatives considered:** (a) Per-method state machine — tempting because each transition has bespoke side effects. Rejected because every method ends up duplicating the same 8 lines of role/branch/audit/history boilerplate and drift between them is a real risk (Phase 9 has 8 transitions; Phase 11+ will add more).
+**Rationale:** Single source of truth. Adding a new transition is one dict entry plus a hook. RBAC and side-effect lists are auditable in one place. The state-matrix unit test (`test_state_matrix`) reads the dict directly.
+**Trade-offs:** The dispatcher is heavier than the simplest per-method form; reading a public method now requires jumping to the dict to understand the rule. Acceptable given the matrix test.
+**Reversibility:** Easy — fan out the dispatcher into per-method state if the dict grows unwieldy.
+**References:** `app/domain/orders/lifecycle.py:ALLOWED_TRANSITIONS`, `:_apply_transition`; `tests/unit/test_order_lifecycle.py::test_state_matrix`; PRODUCT §9; CLAUDE.md "Order state machine".
+
+---
+
+### 2026-05-03 — Refund flow: COD = status flip only; card = create pending Payment row
+**Phase:** 9
+**Context:** Admin clicks Refund on a `delivered` order. PRODUCT §11.3 says refunds are admin-initiated; PHARMACY says nothing concrete about how the row is recorded. Two payment methods to handle: COD (no money was ever charged through the gateway — physical cash refund happens out of band) and card (Freedom Pay charge needs an API-level refund call).
+**Decision:** The `_create_refund_payment_row` side effect inspects `order.payment_method`. For COD: just flip `order.status = refunded` (and write the audit/status-history rows). No `Payment` insert — there's no charge row to refund and no gateway call to make. For card: write a `Payment(is_refund=True, status='pending')` row with the requested amount + reason. Phase 10's Freedom Pay webhook will flip that row to `succeeded` (or `failed`) when the gateway responds, and at that point we're done. The order status flips to `refunded` immediately either way (admin gets clean UX); the gateway settlement is async.
+**Alternatives considered:** (a) Block COD refunds entirely on the API (admin must use a manual-cash workflow). Rejected — admin still wants the order marked as refunded for reporting / audit. (b) Always insert a `Payment(is_refund=True)` row even for COD (with `provider='manual_cash'`). Reasonable; deferred — adds noise to the refunds table without operational payoff at MVP. (c) Wait for the gateway to confirm before flipping status. Rejected — admin UX gets stuck waiting on webhook timing.
+**Rationale:** The status-flip-now / settle-later pattern is what gateways assume; it matches Stripe / Freedom Pay's own UI semantics and keeps the admin queue clean. COD doesn't need a Payment row because there's no machine-readable counterparty.
+**Trade-offs:** A card refund whose gateway call ultimately fails leaves the order at `refunded` but the `Payment(is_refund=True)` row at `failed` — admin needs to retry or manually reconcile. Phase 10 will wire a notification on stuck refunds.
+**Reversibility:** Easy — the rule lives in one method.
+**References:** `app/domain/orders/lifecycle.py:_create_refund_payment_row`; PRODUCT §11.3.
+
+---
+
+### 2026-05-03 — Sales report excludes cancelled + refunded orders from revenue (counts them separately)
+**Phase:** 9
+**Context:** What revenue does the admin sales report show? Three reasonable definitions: (a) gross — sum of all orders with status in `(delivered, ...)` regardless of cancellations, (b) net — sum minus cancelled and refunded, (c) gross-with-callouts — sum of non-cancelled non-refunded plus a separate refunded-amount line.
+**Decision:** Revenue = `SUM(o.total)` over orders where `status NOT IN ('cancelled', 'refunded')`. Cancelled and refunded order *counts* surface as separate fields (`cancelled_count`, `refunded_count`) on the same `SalesSummary`. AOV = revenue / order_count over the same non-cancelled-non-refunded set. Top-products SQL applies the same exclusion.
+**Alternatives considered:** (a) — overstates ops performance. (c) — useful but pushes the refund-amount calculation onto the report query (needs a join to `payments` filtered by `is_refund=true`); deferred to a later iteration.
+**Rationale:** Cancelled order = no money moved (reservation released). Refunded order = money returned. Neither belongs in revenue. Keeping the counts separate gives the admin enough signal to spot a refund spike without inflating the headline.
+**Trade-offs:** Net-revenue reporting hides COD refunds (no explicit refund-amount line until we add one). The report doesn't break down per-product refunds either; Phase 11+ refund-analytics will if needed.
+**Reversibility:** Easy — change one CASE WHEN clause.
+**References:** `app/domain/reports/services.py:_sales_summary`, `:_top_products`; `tests/unit/test_reports_service.py`; PRODUCT §13 (reports).
