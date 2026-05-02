@@ -42,15 +42,23 @@ from app.api.middleware import AccessLogMiddleware, RequestIdMiddleware
 from app.api.v1.router import router as v1_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
+from app.core.redis import close_redis, init_redis
 
 log = get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Startup + shutdown hooks. Idempotent across reloads."""
+    """Startup + shutdown hooks. Idempotent across reloads.
+
+    Order matters: configure logging first so subsequent steps emit
+    structured JSON; init Redis next so any startup-side cache reads
+    work; init Sentry last (it depends on neither, and we want errors
+    in earlier steps to surface as plain logs).
+    """
     settings = get_settings()
     configure_logging(settings)
+    await init_redis(settings)
 
     # Sentry — dsn=None makes init a no-op (per Sentry SDK contract).
     dsn = settings.sentry_dsn.get_secret_value() if settings.sentry_dsn else None
@@ -63,8 +71,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         send_default_pii=False,
     )
     log.info("startup_complete", version=__version__, env=settings.env)
-    yield
-    log.info("shutdown_complete")
+    try:
+        yield
+    finally:
+        await close_redis()
+        log.info("shutdown_complete")
 
 
 def create_app() -> FastAPI:

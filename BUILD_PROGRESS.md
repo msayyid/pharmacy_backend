@@ -5,17 +5,17 @@
 
 ## Current state
 
-- **Active phase:** Phase 2 — Database Foundation & Alembic
+- **Active phase:** Phase 3 — Core Infrastructure
 - **Status:** done
 - **Last session:** 2026-05-02
-- **Next session should:** open `CLAUDE_CODE_PROMPTS.md §8` (Phase 3 — Core Infrastructure). Run the plan-first gate: re-read `BACKEND §3 (core/), §14.6 (security helpers), §16 (middleware), §18 (caching/Redis), §21 (idempotency)` before producing the Phase 3 plan.
+- **Next session should:** open `CLAUDE_CODE_PROMPTS.md §9` (Phase 4 — Identity & Authentication). Run the plan-first gate: re-read `BACKEND §8 (models), §11 (repos), §12 (services), §14 (auth), §15 (errors)` and `PHARMACY §4 (identity schema)` before producing the Phase 4 plan. Phase 4 also drops `app/_ping_transient.py` and writes a migration to drop the `ping` table.
 
 ## Phases
 
 - [x] Phase 0 — Spec Comprehension & Master Plan _(done 2026-05-02)_
 - [x] Phase 1 — Project Foundation _(done 2026-05-02)_
 - [x] Phase 2 — Database Foundation & Alembic _(done 2026-05-02)_
-- [ ] Phase 3 — Core Infrastructure
+- [x] Phase 3 — Core Infrastructure _(done 2026-05-02)_
 - [ ] Phase 4 — Identity & Authentication
 - [ ] Phase 5 — Catalog Domain & Admin Catalog API
 - [ ] Phase 6 — Inventory Domain & Admin Inventory API
@@ -66,6 +66,27 @@ docker compose exec -T mysql-test mysql -utest -ptest pharmacy_test \
   -e "SHOW CREATE TABLE ping\G"                    # asserts InnoDB + utf8mb4 + 0900_ai_ci
 make test                                          # 42 tests pass (24 Phase 1 + 18 Phase 2)
 make lint && make type                             # both clean
+```
+
+### After Phase 3 (verified 2026-05-02)
+
+```bash
+make docker-up-test                                # mysql-test :3307 + redis :6379
+set -a && source .env.test && set +a
+
+# i18n
+uv run python -c "from app.core.i18n import t; \
+  print(t('auth.otp.title','ru')); \
+  print(t('auth.otp.title','ky')); \
+  print(t('sms.otp','en',code='123456'))"          # KY/EN-missing → falls back to RU
+
+# security primitives
+uv run python -c "from app.core.security import normalise_phone, generate_numeric_code; \
+  print(normalise_phone('+996 700 12 34 56')); \
+  print(generate_numeric_code(6))"
+
+# tests
+make lint && make type && make test                # all green; 118 tests pass
 ```
 
 ### After Phase 4 (placeholder — from §23.1 of CLAUDE_CODE_PROMPTS)

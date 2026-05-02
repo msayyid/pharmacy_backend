@@ -13,6 +13,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project initialised; specs and master plan in place.
 - `BUILD_PLAN.md`, `BUILD_PROGRESS.md`, `OPEN_QUESTIONS.md` (12 substantive items), `RISKS.md` (top-10 ranked + watching list), `DECISION_LOG.md` template, this file.
 
+#### Phase 3 — Core Infrastructure (2026-05-02)
+- **Redis client** in `app/core/redis.py` — `init_redis`/`close_redis`/`get_redis` lifecycle, idempotent init, ``decode_responses=True`` so reads come back as ``str``. Wired into FastAPI lifespan.
+- **i18n** in `app/core/i18n.py` — `t(key, lang, **vars)` with fallback chain (lang → default → key + warning), variable interpolation via ``str.format``, lazy JSON loading cached in module dict, `clear_translation_cache()` helper for tests.
+- **i18n JSON files** seeded from `PRODUCT §21.2` (UI copy library, ~36 keys) + `§21.3` (6 SMS templates): `app/i18n/{ru,ky,en}.json`. RU is complete; KY/EN have UI translations from spec; SMS keys exist only in RU and fall back at runtime.
+- **Cache helpers** in `app/core/cache.py` — `cache_get_or_set` (orjson-serialised, miss → loader → write), `invalidate(prefix)` via SCAN + batched DEL, low-level `get_raw`/`set_raw` for opaque storage (used by idempotency).
+- **Rate limiter** in `app/core/ratelimit.py` — `hit(key, limit, window_seconds)` using INCR + EXPIRE NX (fixed-window). Returns post-hit count; raises `RateLimitExceededError` over limit. `reset(key)` for tests/admin.
+- **Security primitives** in `app/core/security.py`:
+    - `hash_password` / `verify_password` — argon2id via passlib (m=65536, t=3, p=2) + appended pepper; `verify_password` returns False on any error (never raises).
+    - `hash_otp` / `verify_otp` — HMAC-SHA256 + pepper, ``hmac.compare_digest`` for constant-time verify.
+    - `generate_numeric_code(length)` — cryptographically random N-digit string via `secrets`.
+    - `normalise_phone(value, default_region="KG")` — E.164 via ``phonenumbers``.
+    - `TokenIssuer` — JWT access (15m) + refresh (30d), HS256, header carries `kid="k1"` (rotation scaffold), `jti` from uuid7. `decode(token, expected_type, expected_kind)` validates and rejects mismatches.
+    - `TokenPair` dataclass exposes both tokens + their jtis.
+- **Idempotency store** in `app/core/idempotency.py` — `body_digest(body) -> sha256 hex`; `check(key, digest, scope="")` returns ``"miss" | "hit_same" | "hit_different"``; `store(key, digest, response, scope="", ttl=86400)` persists in Redis.
+- **Pagination** in `app/core/pagination.py` — `PageParams` (Pydantic clamp 1≤page, 1≤page_size≤100), `page_params` FastAPI dep, `offset_limit`, `Page[T]` envelope; `Cursor[T]` envelope with `encode_cursor`/`decode_cursor` (base64url JSON of created_at + id); `parse_sort` with allow-list rejection.
+- **Lifespan order** in `app/main.py`: ``configure_logging → init_redis → Sentry init → yield → close_redis → shutdown_complete log``.
+- **`RedisDep`** added to `app/api/deps.py` — `Annotated[Redis, Depends(get_redis_dep)]`.
+- **31 new tests (118 total)**:
+    - Unit: `test_security_password.py` (7), `test_security_otp.py` (8), `test_security_jwt.py` (8 incl. expired/wrong-type/wrong-kind/kid), `test_security_phone.py` (7), `test_pagination.py` (15), `test_i18n.py` (14).
+    - Integration (Redis on docker-compose db 15): `test_cache.py` (4), `test_ratelimit.py` (5), `test_idempotency.py` (6), `test_redis_lifecycle.py` (2).
+
 #### Phase 2 — Database Foundation & Alembic (2026-05-02)
 - **Async SQLAlchemy engine** in `app/core/db.py` — `AsyncEngine` from `settings.mysql_dsn`, `async_sessionmaker` with `expire_on_commit=False`, `get_db` FastAPI dependency, `session_scope` async context manager for workers/scripts.
 - **`GUID` BINARY(16) custom type** in `app/core/types.py` with byte-swapped layout that mirrors MySQL `UUID_TO_BIN(uuid_str, 1)` for B-tree locality. Round-trip verified via 6 unit tests including byte-order assertion against the documented swap.

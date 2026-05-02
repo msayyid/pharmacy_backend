@@ -91,6 +91,26 @@ def _migrated_db(alembic_config: Config) -> Iterator[None]:
 
 
 @pytest_asyncio.fixture
+async def redis_clean() -> AsyncIterator[None]:
+    """Per-test Redis: defensive close, init, FLUSHDB, yield, close.
+
+    Per-test init/close avoids the pytest-asyncio function-loop / module-
+    state mismatch (same root cause as the DB ``NullPool`` decision).
+    Cost: ~100ms per test; acceptable for the small number of integration
+    tests that need Redis.
+    """
+    from app.core.config import get_settings
+    from app.core.redis import close_redis, get_redis, init_redis
+
+    await close_redis()  # defensive: clear any leaked module state
+    await init_redis(get_settings())
+    r = get_redis()
+    await r.flushdb()
+    yield
+    await close_redis()
+
+
+@pytest_asyncio.fixture
 async def session(_migrated_db: None) -> AsyncIterator[AsyncSession]:
     """One ``AsyncSession`` per test, rolled back at the end.
 

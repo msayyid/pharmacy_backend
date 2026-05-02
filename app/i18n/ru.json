@@ -1,0 +1,58 @@
+{
+  "auth.otp.title": "Введите номер телефона",
+  "auth.otp.send_button": "Получить код",
+  "auth.otp.sent": "Код отправлен. Действителен 5 минут.",
+  "auth.otp.code_label": "Код из SMS",
+  "auth.otp.verify_button": "Войти",
+  "auth.otp.invalid": "Неверный код. Попробуйте ещё раз.",
+  "auth.otp.too_many": "Слишком много попыток. Запросите новый код.",
+  "auth.rate_limited": "Слишком много запросов. Подождите немного.",
+
+  "cart.empty.title": "Ваша корзина пуста",
+  "cart.empty.cta": "Перейти к покупкам",
+  "cart.out_of_stock": "Нет в наличии",
+  "cart.price_changed": "Цена изменилась",
+
+  "checkout.delivery.address_label": "Адрес доставки",
+  "checkout.delivery.recipient_label": "Получатель",
+  "checkout.delivery.landmark_hint": "Например: напротив школы №42",
+  "checkout.payment.cod": "Оплата при получении",
+  "checkout.payment.card": "Картой онлайн",
+  "checkout.totals.subtotal": "Товары",
+  "checkout.totals.delivery": "Доставка",
+  "checkout.totals.discount": "Скидка",
+  "checkout.totals.total": "Итого",
+  "checkout.free_delivery_hint": "До бесплатной доставки {amount} сом",
+  "checkout.confirm_button": "Подтвердить заказ",
+
+  "order.status.pending": "Ожидает подтверждения",
+  "order.status.confirmed": "Подтвержден",
+  "order.status.preparing": "Готовится",
+  "order.status.ready_for_pickup": "Готов к выдаче",
+  "order.status.out_for_delivery": "В пути",
+  "order.status.delivered": "Доставлен",
+  "order.status.cancelled": "Отменен",
+  "order.status.refunded": "Возврат",
+
+  "error.out_of_stock": "К сожалению, этого товара нет в наличии",
+  "error.cold_chain_delivery": "Этот товар требует доставки в день заказа или самовывоза",
+  "error.cart_expired": "Ваша корзина устарела. Начните заново.",
+  "error.delivery_area": "Доставка пока только в Бишкек. Доступен самовывоз.",
+  "error.network": "Проблема с подключением. Попробуйте ещё раз.",
+  "error.generic": "Что-то пошло не так. Попробуйте позже или позвоните нам.",
+
+  "product.unavailable": "Товар временно недоступен",
+  "product.alternatives.heading": "Похожие препараты",
+  "product.same_ingredient.heading": "С тем же действующим веществом",
+
+  "search.no_results.title": "Ничего не найдено по запросу «{q}»",
+  "search.no_results.suggestion": "Попробуйте: {suggestions}",
+  "search.placeholder": "Поиск лекарств и средств",
+
+  "sms.otp": "Pharmacy: ваш код {code}. Никому не сообщайте.",
+  "sms.order_placed": "Заказ {order_no} принят. Скоро свяжемся для подтверждения. Pharmacy",
+  "sms.order_confirmed": "Заказ {order_no} подтвержден. Готовим к отправке. Pharmacy",
+  "sms.order_dispatched": "Заказ {order_no} в пути. Курьер: {courier_name}, {courier_phone}. Pharmacy",
+  "sms.order_delivered": "Заказ {order_no} доставлен. Спасибо! Pharmacy",
+  "sms.order_cancelled": "Заказ {order_no} отменен. Причина: {reason}. Вопросы: {support_phone}"
+}

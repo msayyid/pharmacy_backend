@@ -1,0 +1,51 @@
+{
+  "auth.otp.title": "Телефон номериңизди жазыңыз",
+  "auth.otp.send_button": "Код алуу",
+  "auth.otp.sent": "Код жөнөтүлдү. 5 мүнөт жарактуу.",
+  "auth.otp.code_label": "SMSтен код",
+  "auth.otp.verify_button": "Кирүү",
+  "auth.otp.invalid": "Туура эмес код. Кайра аракет кылыңыз.",
+  "auth.otp.too_many": "Аракет көп. Жаңы код сураныз.",
+  "auth.rate_limited": "Сурам көп. Бир аз күтө туруңуз.",
+
+  "cart.empty.title": "Себетиңиз бош",
+  "cart.empty.cta": "Дүкөнгө барыңыз",
+  "cart.out_of_stock": "Сатууда жок",
+  "cart.price_changed": "Баасы өзгөрдү",
+
+  "checkout.delivery.address_label": "Жеткирүү дареги",
+  "checkout.delivery.recipient_label": "Алуучу",
+  "checkout.delivery.landmark_hint": "Мисалы: №42 мектептин жанында",
+  "checkout.payment.cod": "Алууда төлөө",
+  "checkout.payment.card": "Карта менен онлайн",
+  "checkout.totals.subtotal": "Товарлар",
+  "checkout.totals.delivery": "Жеткирүү",
+  "checkout.totals.discount": "Арзандатуу",
+  "checkout.totals.total": "Жалпы",
+  "checkout.free_delivery_hint": "Акысыз жеткирүүгө {amount} сом",
+  "checkout.confirm_button": "Буйрутманы тастыктоо",
+
+  "order.status.pending": "Тастыктоону күтүүдө",
+  "order.status.confirmed": "Тастыкталды",
+  "order.status.preparing": "Даярдалууда",
+  "order.status.ready_for_pickup": "Алууга даяр",
+  "order.status.out_for_delivery": "Жолдо",
+  "order.status.delivered": "Жеткирилди",
+  "order.status.cancelled": "Жокко чыгарылды",
+  "order.status.refunded": "Кайтаруу",
+
+  "error.out_of_stock": "Тилекке каршы, бул товар сатууда жок",
+  "error.cold_chain_delivery": "Бул товар буйрутма берилген күнү жеткирилиши же өзү алуу керек",
+  "error.cart_expired": "Себетиңиз эскирди. Кайрадан баштаңыз.",
+  "error.delivery_area": "Жеткирүү азырынча Бишкекте гана. Өзү алуу болот.",
+  "error.network": "Туташтырууда көйгөй. Кайра аракет кылыңыз.",
+  "error.generic": "Бир нерсе туура эмес. Кийин аракет кылыңыз же чалыңыз.",
+
+  "product.unavailable": "Товар убактылуу жок",
+  "product.alternatives.heading": "Окшош дары-дармектер",
+  "product.same_ingredient.heading": "Бирдей таасир этүүчү зат менен",
+
+  "search.no_results.title": "«{q}» боюнча эч нерсе табылган жок",
+  "search.no_results.suggestion": "Аракет кылыңыз: {suggestions}",
+  "search.placeholder": "Дары жана каражаттарды издөө"
+}

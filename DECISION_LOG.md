@@ -211,6 +211,95 @@ Each entry:
 
 ---
 
+### 2026-05-02 — JWT ``kid`` header scaffolded; rotation deferred
+**Phase:** 3
+**Context:** `BACKEND §20.3` mentions 90-day JWT signing-key rotation as ops policy. Phase 3 wires the `TokenIssuer` for the first time. Implementing rotation now is premature — we'd need a key store, key registry, and orchestration.
+**Decision:** Always emit `kid="k1"` in the JWT header. Decoder reads `settings.jwt_secret` directly without consulting `kid`. When rotation lands, the decoder will dispatch on `kid` to a key registry; the encoder will pick the latest active key.
+**Alternatives considered:** Implement full rotation now (over-engineering); skip `kid` entirely and re-issue tokens at rotation (forces all users to re-auth simultaneously).
+**Rationale:** The header field is essentially free; downstream rotation gets a clean migration path with no client changes.
+**Trade-offs:** None at this scale.
+**Reversibility:** Easy.
+**References:** `app/core/security.py:DEFAULT_KID`; BACKEND §20.3.
+
+---
+
+### 2026-05-02 — Rate limiter is fixed-window (INCR + EXPIRE NX), not sliding
+**Phase:** 3
+**Context:** `BACKEND §18.5` describes the rate-limit pattern; PRODUCT §16 gives the limits (e.g. ``3/15m/phone``, ``10/h/IP``). Two competing implementations: fixed-window (INCR + EXPIRE NX) and sliding-window (Redis sorted-set ZADD + ZREMRANGEBYSCORE).
+**Decision:** Implement fixed-window with `INCR` + `EXPIRE key window_seconds NX`. The NX flag means TTL is only set on first hit; subsequent hits don't extend the window.
+**Alternatives considered:** Sliding-window via sorted set — more accurate at boundaries, ~2× memory and more Redis ops per hit. Token-bucket with `EVAL` Lua — most accurate, more complex to implement.
+**Rationale:** Fixed-window is a one-pipeline-call operation; OTP burst tolerance at the boundary (briefly twice the configured rate) is acceptable for MVP. Sliding-window is a Phase 12 hardening item if measured need surfaces.
+**Trade-offs:** Two windows can "stack" near a boundary. Documented in the module docstring.
+**Reversibility:** Easy — swap implementation, signature unchanged.
+**References:** `app/core/ratelimit.py:hit`; BACKEND §18.5.
+
+---
+
+### 2026-05-02 — i18n missing-key returns key + logs warning (never raises)
+**Phase:** 3
+**Context:** Translation lookups can miss in three ways: key absent in target lang only, key absent everywhere, or interpolation variable missing. Need a single deterministic policy that doesn't break production responses.
+**Decision:**
+  1. Target lang missing → fall back to ``settings.default_language`` (RU).
+  2. Default lang also missing → return the literal key string + log ``i18n_missing_key`` at WARNING level.
+  3. Interpolation variable missing → return the unformatted template string + log ``i18n_missing_var``.
+
+Never raises — translation issues surface as observable log signals, not 500 responses.
+**Alternatives considered:** Raise on missing key (breaks production); return empty string (silently swallows the bug); fall back to English (English isn't always translated either).
+**Rationale:** Returning the key string makes the gap visible in dev/test (literal "auth.otp.title" rendered instead of Russian text); production users see a literal key, which is better than a 500. Logs catch it for ops.
+**Trade-offs:** Small chance of literal-key strings reaching production users. Mitigated by tests asserting fallback behaviour and the BACKEND §27 conventions checklist for new keys.
+**Reversibility:** Easy — change one branch.
+**References:** `app/core/i18n.py:t`; BACKEND §22.
+
+---
+
+### 2026-05-02 — Idempotency state in Redis only, never MySQL
+**Phase:** 3
+**Context:** `BACKEND §21.3` calls for Idempotency-Key state in Redis. We could put it in the OLTP DB for durability, but that adds write traffic on the hot path of place-order.
+**Decision:** Idempotency state lives in Redis under ``v1:idem:{scope}:{key}`` with 24-hour TTL. Payload is ``orjson.dumps({"digest": "...", "response": {...}})``.
+**Alternatives considered:** MySQL table with TTL via cron cleanup; write-through to both.
+**Rationale:** Redis is sized for this kind of short-lived high-traffic state. The OLTP DB stays lean. If Redis loses state, the worst case is a duplicate order — and order placement is already a transactional boundary that catches duplicates via stock checks.
+**Trade-offs:** A Redis flush before TTL expiry could cause an unintended duplicate. Acceptable; the place-order transaction's stock invariants prevent overselling regardless.
+**Reversibility:** Easy if we want durability later — add a table, dual-write, deprecate Redis path.
+**References:** `app/core/idempotency.py`; BACKEND §21.3.
+
+---
+
+### 2026-05-02 — Cursor encoding: base64url JSON of (created_at, id)
+**Phase:** 3
+**Context:** Cursor pagination needs an opaque token that survives URL boundaries and can be base64-decoded back to a keyset pointer. JSON shape: ``{"created_at": ISO8601, "id": "<str>"}``.
+**Decision:** ``encode_cursor(created_at, item_id)`` → ``base64.urlsafe_b64encode(orjson.dumps({...}))`` with trailing ``=`` stripped. ``decode_cursor`` re-pads, decodes, and parses. ``id`` is always stringified at encode time so callers can pass UUIDs or BIGINTs.
+**Alternatives considered:** Plain integer cursor (offset) — leaks magnitude info; signed JWT cursor (overkill for opaque pagination); hex-encoded composite key — uglier.
+**Rationale:** base64url is URL-safe and standard; orjson handles `datetime` cleanly; clients never inspect the cursor.
+**Trade-offs:** Cursor strings are slightly longer than offset integers.
+**Reversibility:** Easy — encoding is encapsulated in two functions.
+**References:** `app/core/pagination.py:encode_cursor`; BACKEND §20.2.
+
+---
+
+### 2026-05-02 — Tests use per-test Redis init/close (not session-scoped)
+**Phase:** 3
+**Context:** Same pytest-asyncio function-loop / module-state mismatch as the DB engine in Phase 2. A session-scoped Redis fixture gets connections bound to the first test's loop; subsequent tests on new loops fail.
+**Decision:** `redis_clean` fixture in `tests/conftest.py` does close → init → flushdb → yield → close per test. ~100ms per test cost; negligible for the 11 Redis-using tests at this scale.
+**Alternatives considered:** Session-scoped fixture with `loop_scope="session"` (couples all tests to a single loop, fragile); explicit per-test re-binding (more code).
+**Rationale:** Mirrors the Phase 2 NullPool decision — per-test simplicity beats session-scope perf at this scale.
+**Trade-offs:** Slightly slower tests; absolutely correct semantics.
+**Reversibility:** Easy.
+**References:** `tests/conftest.py:redis_clean`.
+
+---
+
+### 2026-05-02 — `python-jose` retained for Phase 3; review at Phase 4
+**Phase:** 3
+**Context:** OPEN_QUESTIONS Q6 flagged `python-jose` for upstream-activity review. Phase 3 wires `TokenIssuer` for the first time — natural earlier check.
+**Decision:** Keep `python-jose` for Phase 3. Defer the swap-or-stay decision to Phase 4 design (when JWT integrates with the customer auth flow). The `TokenIssuer` API is small and library-agnostic — swap cost is ~30 LoC.
+**Alternatives considered:** Switch to PyJWT now (preempts a future migration); swap on first CVE (reactive).
+**Rationale:** No fresh CVE evidence at the time of writing; swapping mid-Phase-3 introduces a non-feature change. Phase 4 is the right pause point.
+**Trade-offs:** A CVE between now and Phase 4 forces a faster swap. Risk register R-7 tracks it.
+**Reversibility:** Trivial. The `from jose import jwt` line and one decode call are the only library-specific code.
+**References:** OPEN_QUESTIONS Q6; RISKS R-7; `app/core/security.py:TokenIssuer`.
+
+---
+
 ### 2026-05-02 — Test MySQL on port 3307 (tmpfs); dev MySQL on 3306 (volume)
 **Phase:** 1
 **Context:** Tests should not contend with dev DB and should tear down fast.

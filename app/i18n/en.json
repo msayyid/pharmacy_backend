@@ -1,0 +1,51 @@
+{
+  "auth.otp.title": "Enter your phone number",
+  "auth.otp.send_button": "Get code",
+  "auth.otp.sent": "Code sent. Valid for 5 minutes.",
+  "auth.otp.code_label": "Code from SMS",
+  "auth.otp.verify_button": "Sign in",
+  "auth.otp.invalid": "Wrong code. Try again.",
+  "auth.otp.too_many": "Too many attempts. Request a new code.",
+  "auth.rate_limited": "Too many requests. Please wait a moment.",
+
+  "cart.empty.title": "Your cart is empty",
+  "cart.empty.cta": "Continue shopping",
+  "cart.out_of_stock": "Out of stock",
+  "cart.price_changed": "Price has changed",
+
+  "checkout.delivery.address_label": "Delivery address",
+  "checkout.delivery.recipient_label": "Recipient",
+  "checkout.delivery.landmark_hint": "E.g. opposite school №42",
+  "checkout.payment.cod": "Cash on delivery",
+  "checkout.payment.card": "Card online",
+  "checkout.totals.subtotal": "Subtotal",
+  "checkout.totals.delivery": "Delivery",
+  "checkout.totals.discount": "Discount",
+  "checkout.totals.total": "Total",
+  "checkout.free_delivery_hint": "{amount} KGS to free delivery",
+  "checkout.confirm_button": "Place order",
+
+  "order.status.pending": "Awaiting confirmation",
+  "order.status.confirmed": "Confirmed",
+  "order.status.preparing": "Being prepared",
+  "order.status.ready_for_pickup": "Ready for pickup",
+  "order.status.out_for_delivery": "Out for delivery",
+  "order.status.delivered": "Delivered",
+  "order.status.cancelled": "Cancelled",
+  "order.status.refunded": "Refunded",
+
+  "error.out_of_stock": "Sorry, this item is out of stock",
+  "error.cold_chain_delivery": "This item requires same-day delivery or pickup",
+  "error.cart_expired": "Your cart has expired. Please start over.",
+  "error.delivery_area": "Delivery available only in Bishkek. Pickup is available.",
+  "error.network": "Connection problem. Please try again.",
+  "error.generic": "Something went wrong. Try again later or call us.",
+
+  "product.unavailable": "Product temporarily unavailable",
+  "product.alternatives.heading": "Similar products",
+  "product.same_ingredient.heading": "Same active ingredient",
+
+  "search.no_results.title": "No results for \"{q}\"",
+  "search.no_results.suggestion": "Try: {suggestions}",
+  "search.placeholder": "Search medicines"
+}
