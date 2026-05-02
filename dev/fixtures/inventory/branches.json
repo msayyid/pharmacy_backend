@@ -1,0 +1,18 @@
+[
+  {
+    "code": "BISHKEK_CENTRAL",
+    "name": "Аптека Центральная (Бишкек)",
+    "address": "пр. Чуй, 154",
+    "city": "Bishkek",
+    "phone": "+996 312 663 100",
+    "timezone": "Asia/Bishkek"
+  },
+  {
+    "code": "BISHKEK_ASANBAY",
+    "name": "Аптека Асанбай (Бишкек)",
+    "address": "мкр Асанбай, дом 12",
+    "city": "Bishkek",
+    "phone": "+996 312 663 200",
+    "timezone": "Asia/Bishkek"
+  }
+]

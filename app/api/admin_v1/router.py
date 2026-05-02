@@ -4,8 +4,9 @@ Sub-routers:
 * ``auth`` (Phase 4)
 * ``manufacturers``, ``active_ingredients``, ``categories``, ``symptoms``,
   ``products`` (Phase 5)
+* ``inventory`` (Phase 6)
 
-Phase 6+ adds inventory; Phase 9+ adds orders, reports, users, team, audit.
+Phase 9+ adds orders, reports, users, team, audit viewer.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from app.api.admin_v1 import (
     active_ingredients,
     auth,
     categories,
+    inventory,
     manufacturers,
     products,
     symptoms,
@@ -28,3 +30,4 @@ router.include_router(active_ingredients.router)
 router.include_router(categories.router)
 router.include_router(symptoms.router)
 router.include_router(products.router)
+router.include_router(inventory.router)

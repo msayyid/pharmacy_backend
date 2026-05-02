@@ -5,11 +5,11 @@
 
 ## Current state
 
-- **Active phase:** Phase 5 — Catalog Domain & Admin Catalog API _(complete)_
-- **Status:** **complete** — 224 tests pass; mypy --strict clean across 70 source files.
+- **Active phase:** Phase 6 — Inventory Domain & Admin Inventory API _(complete)_
+- **Status:** **complete** — 306 tests pass (incl. concurrent-FEFO × 50 by default); mypy --strict clean across 73 source files.
 - **Last session:** 2026-05-02
-- **Sub-phases done:** 5.1 (models + migration), 5.2 (repositories), 5.3 (schemas + slug + audit service), 5.4 (catalog admin service), 5.5 (product/image/import services), 5.6 (5 admin route modules + router include), 5.7 (10 test files: 2 integration + 3 unit + 3 e2e + factories), 5.8 (dev fixtures + seed script).
-- **Next session should:** start Phase 6 — Inventory Domain & Admin Inventory API. Re-read `PHARMACY §5.5–5.7, §6`, `PRODUCT §6, §13.2`, `BACKEND §11.3, §12.3, §13.5`. Catalog admin endpoints exist now and may need a minimal `Branch` admin module to coexist with inventory.
+- **Sub-phases done:** 6.1 (models + migration with movement-sign CHECK), 6.2 (5 repositories incl. FEFO query with `FOR UPDATE SKIP LOCKED`), 6.3 (`InventoryService` + schemas), 6.4 (admin inventory routes + DI), 6.5 (factories + repo + service + concurrent-FEFO + E2E tests), 6.6 (dev fixtures + seed).
+- **Next session should:** start Phase 7 — Customer Discovery (Browse & Search). Re-read `PRODUCT §7, §8.1–8.4`, `PHARMACY §10–11.3`, `BACKEND §13`. Storefront catalog with FULLTEXT search and substitutes block; cart not yet.
 
 ## Phases
 
@@ -19,7 +19,7 @@
 - [x] Phase 3 — Core Infrastructure _(done 2026-05-02)_
 - [x] Phase 4 — Identity & Authentication _(done 2026-05-02)_
 - [x] Phase 5 — Catalog Domain & Admin Catalog API _(done 2026-05-02)_
-- [ ] Phase 6 — Inventory Domain & Admin Inventory API
+- [x] Phase 6 — Inventory Domain & Admin Inventory API _(done 2026-05-02)_
 - [ ] Phase 7 — Customer Discovery (Browse & Search)
 - [ ] Phase 8 — Cart, Checkout & Place-Order (FEFO)
 - [ ] Phase 9 — Admin Order Lifecycle, Reports & Audit
@@ -133,6 +133,49 @@ curl -s -X POST -H "Content-Type: application/json" \
 
 make test               # 170 tests pass (118 from Phases 1–3 + 52 new in Phase 4)
 make lint && make type  # both clean
+```
+
+### After Phase 6 (verified 2026-05-02)
+
+```bash
+make docker-up-test                                  # mysql-test :3307 + redis
+set -a && source .env.test && set +a
+uv run alembic upgrade head                          # 5 migrations: ping, drop-ping,
+                                                      #   identity, catalog, inventory
+uv run alembic downgrade -1 && uv run alembic upgrade head   # round-trip clean
+
+# Seed: catalog first (needed for product FKs), then inventory.
+uv run python -m dev.fixtures.catalog.seed
+uv run python -m dev.fixtures.inventory.seed
+# → "Seeded 2 branches, 2 suppliers, N branch_products, M inventory_batches"
+
+# Service-level FEFO smoke (mock-as-if-Phase-8). Receive 100 of Panadol
+# at branch 1, allocate 10, confirm remaining = 90 in cache + free pool.
+uv run python -c "
+import asyncio
+from app.core.config import get_settings
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+from sqlalchemy import select
+from app.domain.inventory.models import BranchProduct, InventoryBatch
+from app.domain.catalog.models import Product
+
+async def main():
+    s = get_settings()
+    eng = create_async_engine(str(s.mysql_dsn), poolclass=NullPool)
+    async with async_sessionmaker(eng)() as ses:
+        p = (await ses.execute(select(Product).where(Product.sku=='PAR-500-20'))).scalar_one()
+        bp = (await ses.execute(select(BranchProduct).where(BranchProduct.product_id==p.id))).scalars().first()
+        b = (await ses.execute(select(InventoryBatch).where(InventoryBatch.product_id==p.id))).scalars().first()
+        print(f'Panadol: bp.total={bp.total_quantity} bp.reserved={bp.reserved_quantity} batch.qty_remaining={b.quantity_remaining}')
+asyncio.run(main())"
+
+# Concurrent FEFO smoke
+FEFO_CONCURRENT_LOOPS=50 uv run pytest tests/integration/test_fefo_concurrent.py
+# → 50 passed (no oversell, no deadlock, no double-spend)
+
+make test                # 306 tests pass (224 prior + 82 in Phase 6)
+make lint && make type   # both clean
 ```
 
 ### After Phase 8 (placeholder — extends Phase 4)

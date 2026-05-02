@@ -48,7 +48,14 @@ from app.domain.identity.services import (
     AuthService,
     OtpService,
 )
-from app.domain.inventory.repositories import BranchRepository
+from app.domain.inventory.repositories import (
+    BranchProductRepository,
+    BranchRepository,
+    InventoryBatchRepository,
+    StockMovementRepository,
+    SupplierRepository,
+)
+from app.domain.inventory.services import InventoryService
 from app.domain.ops.repositories import AdminAuditLogRepository
 from app.domain.ops.services import AdminAuditLogService
 from app.integrations.sms.base import get_sms_queue
@@ -102,6 +109,22 @@ def get_admin_session_repository(session: DbSession) -> AdminSessionRepository:
 
 def get_branch_repository(session: DbSession) -> BranchRepository:
     return BranchRepository(session)
+
+
+def get_supplier_repository(session: DbSession) -> SupplierRepository:
+    return SupplierRepository(session)
+
+
+def get_branch_product_repository(session: DbSession) -> BranchProductRepository:
+    return BranchProductRepository(session)
+
+
+def get_inventory_batch_repository(session: DbSession) -> InventoryBatchRepository:
+    return InventoryBatchRepository(session)
+
+
+def get_stock_movement_repository(session: DbSession) -> StockMovementRepository:
+    return StockMovementRepository(session)
 
 
 def get_manufacturer_repository(session: DbSession) -> ManufacturerRepository:
@@ -248,4 +271,24 @@ def get_product_import_service(
         ingredients=ingredients,
         symptoms=symptoms,
         product_service=product_service,
+    )
+
+
+def get_inventory_service(
+    session: DbSession,
+    branches: Annotated[BranchRepository, Depends(get_branch_repository)],
+    suppliers: Annotated[SupplierRepository, Depends(get_supplier_repository)],
+    branch_products: Annotated[BranchProductRepository, Depends(get_branch_product_repository)],
+    batches: Annotated[InventoryBatchRepository, Depends(get_inventory_batch_repository)],
+    movements: Annotated[StockMovementRepository, Depends(get_stock_movement_repository)],
+    audit: Annotated[AdminAuditLogService, Depends(get_admin_audit_service)],
+) -> InventoryService:
+    return InventoryService(
+        session=session,
+        branches=branches,
+        suppliers=suppliers,
+        branch_products=branch_products,
+        batches=batches,
+        movements=movements,
+        audit=audit,
     )

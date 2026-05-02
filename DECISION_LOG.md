@@ -536,3 +536,120 @@ Never raises — translation issues surface as observable log signals, not 500 r
 **Trade-offs:** No end-to-end coverage of the parser/score yet.
 **Reversibility:** Replace with a live test in Phase 7.
 **References:** `tests/integration/test_fulltext.py`; `migrations/versions/20260502_1724_create_catalog_and_audit_log.py`.
+
+---
+
+### 2026-05-02 — `inventory_batches.quantity_reserved` (per-batch reservation tracking)
+**Phase:** 6
+**Context:** PRODUCT §10.1 says "available = total - reserved". PHARMACY §11.4 SQL says `UPDATE inventory_batches SET quantity_remaining = quantity_remaining - $consumed` on reserve. CLAUDE.md "Reservation lifecycle" says reserve increments `reserved_quantity` only and `total_quantity` decrements at the sold transition. These three disagree, and *none* of them prevents oversell-of-a-single-batch under concurrent reservers without per-batch reservation tracking.
+
+Concretely: with two batches A (100) and B (50) and ``bp.reserved=80`` from prior orders distributed somewhere between A and B, a new reserve of 30 cannot safely pick from A without knowing how much of A is already reserved. ``bp.reserved_quantity`` only captures the per-product aggregate.
+
+**Decision:** Add ``quantity_reserved INT`` to ``inventory_batches`` with two CHECK constraints (``>= 0``, ``<= quantity_remaining``). Stock-truth model:
+
+* ``batch.quantity_remaining`` = total physical on hand (held + free).
+* ``batch.quantity_reserved`` = held by pending/confirmed/preparing orders.
+* ``batch.available_to_allocate`` = ``quantity_remaining - quantity_reserved``.
+* ``bp.total_quantity`` = SUM(``quantity_remaining`` for non-expired batches with expiry > today + 7 days).
+* ``bp.reserved_quantity`` = SUM(``quantity_reserved``).
+
+Side effects:
+* FEFO query filters ``quantity_remaining > quantity_reserved`` (instead of ``> 0``).
+* On **reserve**: ``batch.quantity_reserved += take``; ``bp.reserved_quantity += total``. ``quantity_remaining`` unchanged.
+* On **sold** (preparing → ready): ``batch.quantity_remaining -= take``; ``batch.quantity_reserved -= take``; both bp aggregates decrement.
+* On **released** (cancel pre-dispatch): ``batch.quantity_reserved -= take``; ``bp.reserved_quantity -= take``. Physical untouched.
+* On **damaged / adjusted**: cannot reduce ``quantity_remaining`` below ``quantity_reserved`` (held stock can't be written off until releases happen).
+
+**Alternatives considered:** Decrement ``quantity_remaining`` on reserve (per §11.4 SQL) — but then "available = total - reserved" double-counts after every reserve. Aggregate-only ``bp.reserved_quantity`` — admits oversell-per-batch under concurrency.
+
+**Rationale:** Per-batch tracking is the only model that (a) makes the concurrent FEFO test pass without flakes; (b) keeps ``bp.total_quantity`` as the genuine cache of ``SUM(quantity_remaining for non-expired)``; and (c) lets ``available = total - reserved`` reflect reality. The concurrent-FEFO test (`tests/integration/test_fefo_concurrent.py`) verifies the model holds under contention.
+
+**Trade-offs:** One extra column + two extra CHECKs. Adjustments must consider held stock (small admin UX implication; documented in service errors).
+
+**Reversibility:** Easy — column is additive; reverting would require reverting the service logic, not the schema.
+
+**References:** `app/domain/inventory/models.py:InventoryBatch`; `app/domain/inventory/services.py:InventoryService.reserve`; `tests/integration/test_fefo_concurrent.py`; PRODUCT §10.1; PHARMACY §6.4, §11.4.
+
+---
+
+### 2026-05-02 — `branch_products` auto-created on first receive at price=0, is_available=False
+**Phase:** 6
+**Context:** A receive can hit a `(branch, product)` that has never been priced. Two options: (a) lazy-create the row at `price=0, is_available=False` with a "pending pricing" flag; (b) require an explicit "list product at branch" admin action before any receive succeeds. Phase 6 prompt §6 leans toward (a).
+
+**Decision:** Lazy-create on first receive. ``BatchReceiveResponse`` carries ``branch_product_pending_pricing: bool`` so the admin UI can flag the next-step prompt ("set a price"). Storefront filtering is on ``is_available=true``, so these rows are invisible to customers until admin prices them.
+
+**Alternatives considered:** Require an explicit list-at-branch step — bureaucratic; receiving is the natural first interaction with a product at a branch.
+
+**Rationale:** Pragmatic. Prevents the receive workflow from blocking on a separate admin step. Storefront safety preserved by ``is_available=False`` default.
+
+**Trade-offs:** Possible to forget pricing and have stock physically present but invisible. Mitigated by the response flag and an obvious low-stock-style admin alert (Phase 9 dashboards).
+
+**Reversibility:** Easy — change the service to raise instead of auto-create.
+
+**References:** `app/domain/inventory/services.py:InventoryService.receive_batch`.
+
+---
+
+### 2026-05-02 — `stock_movements.order_id` is column-only at Phase 6 (FK in Phase 8)
+**Phase:** 6
+**Context:** ``stock_movements`` references the future ``orders`` table by id. Orders don't exist until Phase 8; we need ``stock_movements`` now for receive / adjust audit.
+
+**Decision:** Define ``order_id`` as a nullable ``BINARY(16)`` (``GUID``) column without a foreign key in Phase 6's migration. Phase 8's migration adds ``ALTER TABLE stock_movements ADD CONSTRAINT fk_sm_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL`` once the orders table lands.
+
+**Alternatives considered:** Forward-declare an orders stub in Phase 6 — adds noise; tested and rejected. Use ``CHAR(36)`` to dodge GUID — abandons the byte-swapped UUID7 layout.
+
+**Rationale:** Column shape is correct now; FK can be added later without data migration.
+
+**Trade-offs:** A reserved/sold movement could in theory reference a non-existent ``order_id`` until Phase 8 ships. The application layer always sets ``order_id`` from a freshly-issued ``uuid7()``, so the risk is theoretical.
+
+**Reversibility:** Trivial — the FK is the only thing missing.
+
+**References:** `migrations/versions/20260502_1827_create_inventory_tables.py`; `app/domain/inventory/models.py:StockMovement`.
+
+---
+
+### 2026-05-02 — Admin UI copy is EN-primary at MVP; PRODUCT §21 covers customer copy only
+**Phase:** 6
+**Context:** PRODUCT §21 enumerates customer-facing strings in RU/KY/EN. Admin-tier strings (receiving form labels, adjustment reasons, validation errors) are not catalogued. Russian admin would need a separate i18n pass.
+
+**Decision:** Admin endpoints return error codes (``code: "expiry_within_hard_block"``); admin frontend resolves the message in EN at MVP. Phase 9 (the audit-log viewer + reports) is the natural revisit point if the team wants RU admin UI.
+
+**Rationale:** Backend stays code-first; no premature i18n investment for a tiny internal audience.
+
+**Trade-offs:** Bishkek pharmacists are RU-primary; if they prefer RU, frontend ships an admin RU bundle later. Backend doesn't need to change.
+
+**Reversibility:** Easy — admin codes are stable; FE can map them to any locale.
+
+**References:** `app/api/admin_v1/inventory.py` (no `t()` lookups).
+
+---
+
+### 2026-05-02 — Concurrent FEFO test runs 50× by default, parameterised to 100× via `FEFO_CONCURRENT_LOOPS`
+**Phase:** 6
+**Context:** Phase 6 prompt asks for the concurrent FEFO test to run 100× in CI to catch flakes. 100× per-loop set-up + teardown adds ~3-4s to the test suite, which compounds across other repeated tests.
+
+**Decision:** Default to **50 loops** (`tests/integration/test_fefo_concurrent.py`); honour `FEFO_CONCURRENT_LOOPS` env override. Nightly CI sets it to 100; PR runs at 50. Each loop seeds a fresh `(branch, product, batches)` triple, so loops are fully independent.
+
+**Rationale:** 50 catches concurrency bugs reliably (validated locally); 100 buys marginal additional confidence at the cost of doubling the run time. Nightly runs at 100 keep the spec target.
+
+**Trade-offs:** Slightly less concurrency confidence on PR. If a regression slips through 50× and only fails at 100×, nightly catches it within 24h.
+
+**Reversibility:** Trivial — change the env default.
+
+**References:** `tests/integration/test_fefo_concurrent.py`.
+
+---
+
+### 2026-05-02 — Composing `require_role` + `require_branch_access`: nested-Depends factory, not stacked `Annotated`
+**Phase:** 6
+**Context:** Routes that need both role-gating and per-branch-scoping for non-super-admins. Obvious form `Annotated[AdminUser, Depends(require_role(...)), Depends(require_branch_access(...))]` silently fires only the last `Depends` — FastAPI binds the variable from the rightmost provider and ignores earlier ones in the same `Annotated`. Discovered the bug because `content_editor` (which lacks role permission) was being admitted to inventory routes.
+
+**Decision:** Wrap both checks in a single inner factory. `app/api/admin_v1/inventory.py:_branch_admin(*roles)` returns a nested dep whose own parameters bind to `Depends(require_role(*roles))` and `Depends(require_branch_access('branch_id'))`, then returns the role-gated admin. Both deps run; both raise on mismatch. Used `param: T = Depends(...)` (not `Annotated[T, Depends(...)]`) inside the closure because `from __future__ import annotations` defers annotations to strings, and the closure-captured `role_check` / `branch_check` aren't resolvable by `get_type_hints` at module level.
+
+**Rationale:** Idiomatic FastAPI composition. The bug is not obvious from code review and silently downgrades RBAC — must not recur.
+
+**Trade-offs:** Slightly more indirection. Worth it.
+
+**Reversibility:** Trivial.
+
+**References:** `app/api/admin_v1/inventory.py:_branch_admin`.

@@ -13,6 +13,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project initialised; specs and master plan in place.
 - `BUILD_PLAN.md`, `BUILD_PROGRESS.md`, `OPEN_QUESTIONS.md` (12 substantive items), `RISKS.md` (top-10 ranked + watching list), `DECISION_LOG.md` template, this file.
 
+#### Phase 6 — Inventory foundation (2026-05-02) — complete
+
+- **4 new tables** in `app/domain/inventory/models.py`: `suppliers`, `branch_products` (composite PK `(branch_id, product_id)` with cached `total_quantity` / `reserved_quantity`), `inventory_batches` (source-of-truth, with **per-batch** `quantity_reserved` for concurrency-safe FEFO), `stock_movements` (append-only audit). Plus `MovementType` `StrEnum`.
+- **Migration `896070994c68 — create inventory tables`** — composite indexes for FEFO (`idx_ib_fefo` on `(branch_id, product_id, expiry_date, received_at)`) and reports (`idx_ib_expiry`, `idx_bp_low_stock`); the `chk_movement_sign` CHECK is emitted via `op.execute` for the multi-clause disjunction (Phase 5 discipline). Round-trips clean.
+- **5 repositories** in `app/domain/inventory/repositories.py`: `BranchRepository`, `SupplierRepository`, `BranchProductRepository` (composite PK + `get_for_update` + `list_low_stock`), `InventoryBatchRepository` (`list_for_fefo_locked` with `FOR UPDATE SKIP LOCKED` filtering 7-day hard block + per-batch reservation; `list_near_expiry`; `sum_remaining_non_expired` for reconcile), `StockMovementRepository` (append-only + filtered list).
+- **`InventoryService`** in `app/domain/inventory/services.py`:
+    - `receive_batch` — auto-creates `branch_products` row at `price=0, is_available=False` ("pending pricing"); 7-day hard-block check; super_admin-only override; `is_short_dated` flag for ≤60 days; same-batch-twice → 409; pairs every batch insert with a `received` movement and a cache update inside one transaction.
+    - `adjust_batch` — signed `quantity_change`; rejects "below reserved"; writes `damaged` or `adjusted` movement.
+    - `allocate_for_order` — FEFO with `FOR UPDATE SKIP LOCKED` + per-batch unreserved-only filter; raises `OutOfStockError` on shortfall; returns `BatchAllocation` plan.
+    - `reserve` — applies allocations: increments per-batch `quantity_reserved`, writes `reserved` movements, bumps `bp.reserved_quantity` (does NOT decrement `quantity_remaining` — that moves only at sale).
+    - `convert_reservation_to_sold` — flips `reserved` → `sold`, decrements `quantity_remaining` and `total_quantity`.
+    - `release_reservations` — pre-dispatch cancel; un-reserves; physical stock untouched.
+    - `release_pending_orders` — worker hook (Phase 11 schedules).
+    - `reconcile_branch_product` — recomputes cache from sum of batches; safety net.
+    - `update_branch_product` — admin pricing / threshold / availability path with audit log.
+- **Schemas** in `app/domain/inventory/schemas.py` — request bodies (`BatchReceiveRequest`, `BatchAdjustRequest`, `BranchProductUpdate`), reads (`BatchRead`, `BranchProductRead`, `StockMovementRead`), report rows (`NearExpiryRow`, `LowStockRow`), and `BatchAllocation` (the FEFO planner output Phase 8 will consume).
+- **7 admin endpoints** under `/api/admin/v1` (`app/api/admin_v1/inventory.py`):
+    - `POST /branches/{id}/inventory/batches` — receive
+    - `PATCH /inventory/batches/{batch_id}` — adjust (with reason + signed delta + manual-branch enforcement for non-super)
+    - `PATCH /branches/{id}/inventory/products/{product_id}` — pricing / threshold / availability
+    - `GET /branches/{id}/inventory` — paginated list with `low_stock` / `only_available` filters
+    - `GET /inventory/movements` — audit list with date range / product / branch / type / admin / order filters
+    - `GET /branches/{id}/reports/near-expiry?days=30|60|90&format=json|csv` — streaming CSV
+    - `GET /branches/{id}/reports/low-stock?format=json|csv` — streaming CSV
+- **RBAC**: `super_admin`, `branch_manager`, `pharmacist` allowed; `content_editor` forbidden (403). Per-branch enforcement via composite `_branch_admin` dep that nests `require_role` + `require_branch_access` (the obvious `Annotated[X, Depends(a), Depends(b)]` form silently fires only the last `Depends` — documented in DECISION_LOG).
+- **DI**: `app/api/deps.py` adds factories for the 4 new repos + the inventory service.
+- **82 new tests (306 total)**:
+    - Integration: `test_inventory_repos.py` (10 — UNIQUE batch natural-key collision; `chk_bp_reserved_le_total`; `chk_ib_remaining_le_received`; `chk_ib_reserved_le_remaining`; `chk_movement_sign` rejecting wrong-sign; FEFO ordering; FEFO 7-day exclusion; FEFO unreserved-only filter; low-stock query; near-expiry window; stock_movement append + filter); `test_fefo_concurrent.py` (parameterised: 50 loops by default, env `FEFO_CONCURRENT_LOOPS=100` for nightly; asserts no oversell, no deadlock, no double-spend per batch — the hard concurrency centrepiece).
+    - Unit: `test_inventory_service.py` (15 — receive happy path; receive within hard-block rejected; override requires super_admin; short-dated flag; same-batch-twice 409; adjust damaged decrements; adjust below reserved blocked; allocate FEFO splits across batches; insufficient-stock raises; reserve increments + writes movement + leaves remaining unchanged; reservation → sold decrements; release returns to free pool; reconcile corrects drift; bp update; bp not-found).
+    - E2E: `test_inventory_admin.py` (7 — pharmacist receives + sees stock; receive within hard block 400; pharmacist adjusts own batch; content_editor 403; branch_manager other-branch 403; low-stock report; near-expiry CSV format).
+- **Test factories** in `tests/factories/inventory.py` — `seed_branch`, `seed_supplier`, `seed_branch_product`, `seed_inventory_batch` (in-session) plus committed variants for E2E.
+- **Dev fixtures** under `dev/fixtures/inventory/`: `branches.json` (2 — Bishkek Central + Asanbay), `suppliers.json` (2), `batches.json` (7 batches across both branches with mixed expiries to exercise the 60-day soft-warn and FEFO ordering); `seed.py` is idempotent and resolves products by SKU from the catalog seed.
+
 #### Phase 5 — Catalog foundation (2026-05-02) — complete
 
 - **13 catalog/ops tables** in `app/domain/catalog/models.py` and `app/domain/ops/models.py`: `manufacturers`, `active_ingredients` + `active_ingredient_translations`, `categories` + `category_translations`, `symptoms` + `symptom_translations`, `products` + `product_translations` + `product_images`, `product_active_ingredients` (M:N with dosage), `product_symptoms` (M:N), `admin_audit_log`.

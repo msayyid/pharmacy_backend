@@ -1,0 +1,79 @@
+[
+  {
+    "branch_code": "BISHKEK_CENTRAL",
+    "product_sku": "PAR-500-20",
+    "supplier_name": "Айболит дистрибьюция",
+    "batch_number": "PAR-500-LOT-01",
+    "expiry_days_from_today": 540,
+    "manufacture_days_ago": 60,
+    "quantity_received": 200,
+    "cost_price": "32.50",
+    "branch_product_price": "85.00"
+  },
+  {
+    "branch_code": "BISHKEK_CENTRAL",
+    "product_sku": "IBU-200-30",
+    "supplier_name": "Pharmer Asia",
+    "batch_number": "IBU-200-LOT-04",
+    "expiry_days_from_today": 720,
+    "manufacture_days_ago": 30,
+    "quantity_received": 120,
+    "cost_price": "65.00",
+    "branch_product_price": "145.00"
+  },
+  {
+    "branch_code": "BISHKEK_CENTRAL",
+    "product_sku": "ASP-500-10",
+    "supplier_name": "Айболит дистрибьюция",
+    "batch_number": "ASP-500-LOT-12",
+    "expiry_days_from_today": 365,
+    "manufacture_days_ago": 90,
+    "quantity_received": 80,
+    "cost_price": "28.00",
+    "branch_product_price": "62.00"
+  },
+  {
+    "branch_code": "BISHKEK_CENTRAL",
+    "product_sku": "VIT-C-1000",
+    "supplier_name": "Pharmer Asia",
+    "batch_number": "VIT-C-LOT-07",
+    "expiry_days_from_today": 600,
+    "manufacture_days_ago": 45,
+    "quantity_received": 60,
+    "cost_price": "180.00",
+    "branch_product_price": "395.00"
+  },
+  {
+    "branch_code": "BISHKEK_CENTRAL",
+    "product_sku": "OME-20-14",
+    "supplier_name": "Pharmer Asia",
+    "batch_number": "OME-20-LOT-03",
+    "expiry_days_from_today": 365,
+    "manufacture_days_ago": 60,
+    "quantity_received": 40,
+    "cost_price": "120.00",
+    "branch_product_price": "260.00"
+  },
+  {
+    "branch_code": "BISHKEK_ASANBAY",
+    "product_sku": "PAR-500-20",
+    "supplier_name": "Айболит дистрибьюция",
+    "batch_number": "PAR-500-LOT-02",
+    "expiry_days_from_today": 540,
+    "manufacture_days_ago": 60,
+    "quantity_received": 100,
+    "cost_price": "32.50",
+    "branch_product_price": "85.00"
+  },
+  {
+    "branch_code": "BISHKEK_ASANBAY",
+    "product_sku": "IBU-200-30",
+    "supplier_name": "Pharmer Asia",
+    "batch_number": "IBU-200-LOT-05",
+    "expiry_days_from_today": 45,
+    "manufacture_days_ago": 690,
+    "quantity_received": 30,
+    "cost_price": "65.00",
+    "branch_product_price": "145.00"
+  }
+]
