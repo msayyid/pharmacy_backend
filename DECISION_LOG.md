@@ -418,6 +418,78 @@ Never raises — translation issues surface as observable log signals, not 500 r
 
 ---
 
+### 2026-05-02 — `admin_audit_log` table created in Phase 5 (relocated from Phase 9)
+**Phase:** 5
+**Context:** PHARMACY §8.1 originally puts `admin_audit_log` in the ops domain (Phase 9). But every catalog/inventory/order admin mutation needs to write an audit row from day one — without the table, mutations have nowhere to log.
+**Decision:** Land `admin_audit_log` in Phase 5's migration alongside the catalog tables. Phase 9 will add only the read-side viewer endpoint (`F-ADM-AUD-001`).
+**Alternatives considered:** Buffer audit events to a queue/log file in Phase 5 and replay them when the table arrives in Phase 9. Adds operational complexity and a window where audit data is at risk.
+**Rationale:** CLAUDE_CODE_PROMPTS Phase 5 explicitly recommends this. One migration > buffer + replay.
+**Trade-offs:** Phase 9 owns the entity but Phase 5 owns the schema. Documented.
+**Reversibility:** N/A.
+**References:** `migrations/versions/20260502_1724_create_catalog_and_audit_log.py`; CLAUDE_CODE_PROMPTS Phase 5.
+
+---
+
+### 2026-05-02 — `python-slugify[unidecode]` for Cyrillic → Latin URL slugs
+**Phase:** 5
+**Context:** Categories, symptoms, and products need URL slugs. Russian product names (`Панадол 500мг`) need transliteration; the spec PHARMACY §5.6 has no transliteration logic and `BACKEND §2` doesn't pin a slug library.
+**Decision:** Add `python-slugify[unidecode]>=8.0,<9.0` to runtime deps. Implement `slugify_name(name)` in `app/domain/catalog/slug.py`.
+**Alternatives considered:** Hand-roll a GOST 7.79 transliteration map (~100 LoC, error-prone). Use `unidecode` directly (no slug post-processing). Use `awesome-slugify` (less maintained).
+**Rationale:** `python-slugify` is the de facto standard, has the `unidecode` extra for non-ASCII, and is small + actively maintained. Verified output: `Панадол 500мг → panadol-500mg`, `Парацетамол → paratsetamol`, `Аптека на Чуй → apteka-na-chui`.
+**Trade-offs:** Adds two transitive deps (`python-slugify`, `unidecode`). Acceptable for the value.
+**Reversibility:** Easy.
+**References:** `app/domain/catalog/slug.py`; `pyproject.toml`.
+
+---
+
+### 2026-05-02 — Bulk import: CSV only at Phase 5; XLSX deferred to Phase 1.5+
+**Phase:** 5
+**Context:** F-ADM-CAT-002 specifies "CSV or XLSX up to 10 MB". XLSX requires `openpyxl` (~2 MB transitively).
+**Decision:** Phase 5 ships CSV only via Python's stdlib `csv` module. The route signals `415 Unsupported Media Type` if a `.xlsx` upload is attempted. XLSX support added in Phase 1.5+ when needed; document in `BUILD_PROGRESS > Backlog`.
+**Alternatives considered:** Add `openpyxl` now. `pandas` (heavy + numpy + transitive deps).
+**Rationale:** CSV covers 90% of admin import workflows at MVP scale. Deferring keeps the dep set tight per project rule "smallest possible package."
+**Trade-offs:** A pharmacy ops team wanting Excel upload has to convert to CSV. Acceptable for MVP.
+**Reversibility:** Easy.
+**References:** `app/domain/catalog/import_service.py` (Phase 5.5); BUILD_PROGRESS Backlog.
+
+---
+
+### 2026-05-02 — `categories` self-parent CHECK omitted (MySQL 8.0+ rejects CHECK on AUTO_INCREMENT)
+**Phase:** 5
+**Context:** PHARMACY §5.1 has `CHECK (parent_id IS NULL OR parent_id <> id)`. MySQL 8.0+ raises error 3818: "Check constraint cannot refer to an auto-increment column."
+**Decision:** Drop the constraint from the model + migration. Enforce self-parent prevention in the service layer (`CategoryService.update_parent`).
+**Alternatives considered:** Use a non-AUTO_INCREMENT PK (UUID). Rebuild via trigger (heavier, less portable).
+**Rationale:** MySQL restriction is non-negotiable. Service-level enforcement is acceptable since admin mutations all go through the service.
+**Trade-offs:** Lost defense-in-depth at the DB level — bypassing the service (e.g., direct SQL) could create cycles. Mitigation: BACKEND §27 conventions checklist requires service-level mutations.
+**Reversibility:** N/A while on MySQL 8.x.
+**References:** `app/domain/catalog/models.py:Category`; PHARMACY §5.1.
+
+---
+
+### 2026-05-02 — `dosage_unit` CHECK emitted via `op.execute` (avoids `%%` paramstyle escape)
+**Phase:** 5
+**Context:** `dosage_unit IN ('mg','g','mcg','ml','IU','%')` — the `%` value triggered SQLAlchemy's auto-doubling for paramstyle safety, emitting `'%%'` in the DDL. MySQL would have stored the literal `%%` in the constraint and rejected runtime inserts of `%`.
+**Decision:** Drop the autogen `sa.CheckConstraint` from `product_active_ingredients` and emit the constraint via `op.execute("ALTER TABLE ... ADD CONSTRAINT ... CHECK (dosage_unit IN ('mg','g','mcg','ml','IU','%'))")` after table creation. Verified: insertion with `'%'` succeeds; insertion with `'BOGUS'` raises constraint error.
+**Alternatives considered:** Change the enum value (e.g., `'PCT'` instead of `'%'`) — diverges from PHARMACY §5.9; user-facing display would need post-processing.
+**Rationale:** Match the spec value; bypass the format-string escape with a raw DDL emit.
+**Trade-offs:** A few extra lines in the migration.
+**Reversibility:** Easy.
+**References:** `migrations/versions/20260502_1724_create_catalog_and_audit_log.py`.
+
+---
+
+### 2026-05-02 — FULLTEXT `WITH PARSER ngram` via `op.execute` (SQLAlchemy can't render it)
+**Phase:** 5
+**Context:** `product_translations` needs a FULLTEXT index with the ngram parser for Cyrillic search (BACKEND §6.4, RISKS R-4). SQLAlchemy's `Index(..., mysql_prefix="FULLTEXT")` emits `CREATE FULLTEXT INDEX ...` but has no API for the `WITH PARSER ngram` clause.
+**Decision:** In the migration, drop the autogen FULLTEXT index entry and emit it as raw SQL: `op.execute("CREATE FULLTEXT INDEX ftx_pt_search ON product_translations (name, short_description, description) WITH PARSER ngram")`. `ngram_token_size=2` is set on the server (docker-compose).
+**Alternatives considered:** Skip the parser clause and use the default parser — fails on Cyrillic. Use Meilisearch from day one — Phase 12 graduation per RISKS R-4.
+**Rationale:** Required for Cyrillic FTS at MVP. Verified: `SHOW INDEX FROM product_translations WHERE Key_name='ftx_pt_search'` shows `Index_type: FULLTEXT`.
+**Trade-offs:** Migration carries a raw-SQL section.
+**Reversibility:** `DROP INDEX ftx_pt_search ON product_translations`.
+**References:** `migrations/versions/20260502_1724_create_catalog_and_audit_log.py`; BACKEND §6.4.
+
+---
+
 ### 2026-05-02 — Test MySQL on port 3307 (tmpfs); dev MySQL on 3306 (volume)
 **Phase:** 1
 **Context:** Tests should not contend with dev DB and should tear down fast.

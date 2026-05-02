@@ -5,10 +5,12 @@
 
 ## Current state
 
-- **Active phase:** Phase 4 — Identity & Authentication
-- **Status:** done
+- **Active phase:** Phase 5 — Catalog Domain & Admin Catalog API
+- **Status:** **in progress — foundation done, services + routes + tests + fixtures still ahead**
 - **Last session:** 2026-05-02
-- **Next session should:** open `CLAUDE_CODE_PROMPTS.md §10` (Phase 5 — Catalog Domain & Admin Catalog API). Plan-first gate: re-read `BACKEND §8 (models, FULLTEXT), §10 (schemas), §11 (repos), §12 (services), §13 (routers)` and `PHARMACY §5 (catalog schema)`, plus `PRODUCT §5, §8.5, §13` for behaviour.
+- **Sub-phases done:** 5.1 (models + migration), 5.2 (repositories), 5.3 (schemas + slug + audit service).
+- **Sub-phases remaining:** 5.4 (catalog admin services for the simpler aggregates), 5.5 (product/image/import services), 5.6 (5 admin route modules), 5.7 (~10 test files), 5.8 (dev fixtures + hand-off).
+- **Next session should:** start at 5.4. Re-read `PRODUCT §5, §8.5, §13`, `BACKEND §11.2, §12.2, §13.4`, and the bulk-import column contract below. Resume planning is unchanged from the original Phase 5 plan in CHANGELOG entry "Phase 5 (in progress)."
 
 ## Phases
 
@@ -17,7 +19,7 @@
 - [x] Phase 2 — Database Foundation & Alembic _(done 2026-05-02)_
 - [x] Phase 3 — Core Infrastructure _(done 2026-05-02)_
 - [x] Phase 4 — Identity & Authentication _(done 2026-05-02)_
-- [ ] Phase 5 — Catalog Domain & Admin Catalog API
+- [~] Phase 5 — Catalog Domain & Admin Catalog API _(in progress 2026-05-02; 5.1–5.3 done)_
 - [ ] Phase 6 — Inventory Domain & Admin Inventory API
 - [ ] Phase 7 — Customer Discovery (Browse & Search)
 - [ ] Phase 8 — Cart, Checkout & Place-Order (FEFO)
@@ -152,6 +154,51 @@ curl -X POST localhost:8000/api/v1/checkout/place \
 ### After Phase 12
 
 Add: "smoke recipe runs against a fresh DB end-to-end" and the OWASP audit checklist signed off.
+
+## Bulk-import CSV column contract (Phase 5)
+
+> Locked in Phase 5.3 per `CLAUDE_CODE_PROMPTS` Phase 5 spec. The
+> ``ProductImportService`` (Phase 5.5) reads exactly these columns. Changes
+> require a phase-boundary decision in `DECISION_LOG.md`.
+
+```
+sku                       (required, unique)
+barcode                   (optional)
+slug                      (optional — auto-generated from name_ru if absent)
+manufacturer              (optional — string match against manufacturers.name)
+category_path             (required — slash-delimited slug chain, e.g. "analgesics/paracetamol")
+form                      (required — one of the ProductForm enum values)
+pack_size_label           (optional)
+pack_quantity             (optional, decimal)
+pack_unit                 (optional)
+requires_prescription     (optional, boolean — "true"/"false"/"1"/"0"; default false)
+min_age                   (optional, int)
+max_per_order             (optional, int)
+weight_grams              (optional, int)
+requires_cold_chain       (optional, boolean; default false)
+storage_temp_min_c        (optional, int)
+storage_temp_max_c        (optional, int)
+is_active                 (optional, boolean; default true)
+is_featured               (optional, boolean; default false)
+name_ru                   (recommended — RU mandatory for storefront visibility)
+name_ky                   (optional)
+name_en                   (optional)
+short_description_ru      (optional)
+short_description_ky      (optional)
+short_description_en      (optional)
+description_ru            (optional)
+description_ky            (optional)
+description_en            (optional)
+active_ingredients        (optional — semicolon-separated triples
+                           "Paracetamol:500:mg;Caffeine:50:mg")
+symptoms                  (optional — semicolon-separated symptom slugs:
+                           "headache;fever")
+```
+
+**Idempotency:** rows are matched by ``sku``. Existing SKUs are updated
+(translations + M:N replaced; never deleted by import). New SKUs inserted.
+Missing SKUs in the file are NEVER deleted. Phase 5 limits ≤ 500 rows
+synchronously; ≥ 501 returns 413 ("use the worker — Phase 11").
 
 ## Backlog (deferred items)
 

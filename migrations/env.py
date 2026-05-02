@@ -23,15 +23,15 @@ from app.core.db_base import Base
 
 # IMPORTANT: import every domain.<context>.models so they register on
 # Base.metadata BEFORE autogenerate runs.
+import app.domain.catalog.models
 import app.domain.identity.models
-import app.domain.inventory.models  # noqa: F401
+import app.domain.inventory.models
+import app.domain.ops.models  # noqa: F401
 
-# Phase 5+ will add:
-#   import app.domain.catalog.models
+# Phase 6+ will add:
 #   import app.domain.orders.models
 #   import app.domain.payments.models
 #   import app.domain.deliveries.models
-#   import app.domain.ops.models
 
 settings = get_settings()
 config = context.config

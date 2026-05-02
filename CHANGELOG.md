@@ -13,6 +13,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project initialised; specs and master plan in place.
 - `BUILD_PLAN.md`, `BUILD_PROGRESS.md`, `OPEN_QUESTIONS.md` (12 substantive items), `RISKS.md` (top-10 ranked + watching list), `DECISION_LOG.md` template, this file.
 
+#### Phase 5 (in progress) — Catalog foundation (2026-05-02)
+*Sub-phases 5.1–5.3 complete; services + routes + tests + fixtures still ahead.*
+
+- **13 catalog/ops tables** in `app/domain/catalog/models.py` and `app/domain/ops/models.py`: `manufacturers`, `active_ingredients` + `active_ingredient_translations`, `categories` + `category_translations`, `symptoms` + `symptom_translations`, `products` + `product_translations` + `product_images`, `product_active_ingredients` (M:N with dosage), `product_symptoms` (M:N), `admin_audit_log`.
+- **Migration `5b872d07a987 — create catalog and audit log`:**
+    - FULLTEXT index `ftx_pt_search` on `product_translations(name, short_description, description)` `WITH PARSER ngram` — emitted via `op.execute` since SQLAlchemy doesn't render the parser clause.
+    - Generated-column trick on `product_images.primary_product_id` enforces "one primary image per product"; `product_images.product_id` FK uses `ON DELETE RESTRICT` (MySQL forbids STORED generated columns from depending on FK-CASCADE columns — same Phase 4 finding).
+    - `dosage_unit` CHECK emitted via `op.execute` to avoid SQLAlchemy's `%` → `%%` paramstyle escape.
+    - Spec deviation: `categories` self-parent CHECK omitted — MySQL 8.0+ rejects CHECK constraints on AUTO_INCREMENT columns (error 3818). Enforced in the service layer instead (Phase 5.4).
+    - Hand-edited from autogen output: removed spurious `ALTER COLUMN ... server_default` noise on existing identity tables; simplified downgrade to `drop_table` per table.
+- **Repositories**: `ManufacturerRepository`, `ActiveIngredientRepository`, `CategoryRepository`, `SymptomRepository`, `ProductRepository` (with `get_by_id_with_full` + `fulltext_search`), `AdminAuditLogRepository`.
+- **~30 schemas** for Create/Update/Read across all 5 catalog aggregates with nested translations + M:N shapes; `ProductCreate` carries everything for atomic creation; `BulkImportRowError` + `BulkImportSummary`.
+- **`SlugService`** (`app/domain/catalog/slug.py`) — Cyrillic transliteration via `python-slugify[unidecode]` (`Панадол 500мг` → `panadol-500mg`); `unique_slug(base, exists)` collision-suffix loop.
+- **`AdminAuditLogService`** (`app/domain/ops/services.py`) — single helper Phase 5.4+ services use for every mutation.
+- **New dep:** `python-slugify[unidecode]>=8.0,<9.0`.
+- **Bulk-import CSV column contract locked** in `BUILD_PROGRESS.md`.
+- 170 tests still pass; ruff + mypy --strict clean across 61 source files.
+
 #### Phase 4 — Identity & Authentication (2026-05-02)
 - **Domain:** identity (`User`, `UserAddress`, `OtpCode`, `AdminUser`, `AdminSession`) + minimal `Branch` model (Phase 6 expands inventory).
 - **Migrations:** two new revisions — `drop_ping_placeholder` removes the Phase 2 stand-in; `create_identity_tables` adds 6 tables with the partial-unique generated-column trick on `user_addresses.default_user_id`.
