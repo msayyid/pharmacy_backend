@@ -5,16 +5,16 @@
 
 ## Current state
 
-- **Active phase:** Phase 1 — Project Foundation
+- **Active phase:** Phase 2 — Database Foundation & Alembic
 - **Status:** done
 - **Last session:** 2026-05-02
-- **Next session should:** open `CLAUDE_CODE_PROMPTS.md §7` (Phase 2 — Database Foundation & Alembic). Run the plan-first gate: re-read `BACKEND §6, §7, §9` and `PHARMACY §1–13` before producing the Phase 2 plan.
+- **Next session should:** open `CLAUDE_CODE_PROMPTS.md §8` (Phase 3 — Core Infrastructure). Run the plan-first gate: re-read `BACKEND §3 (core/), §14.6 (security helpers), §16 (middleware), §18 (caching/Redis), §21 (idempotency)` before producing the Phase 3 plan.
 
 ## Phases
 
 - [x] Phase 0 — Spec Comprehension & Master Plan _(done 2026-05-02)_
 - [x] Phase 1 — Project Foundation _(done 2026-05-02)_
-- [ ] Phase 2 — Database Foundation & Alembic
+- [x] Phase 2 — Database Foundation & Alembic _(done 2026-05-02)_
 - [ ] Phase 3 — Core Infrastructure
 - [ ] Phase 4 — Identity & Authentication
 - [ ] Phase 5 — Catalog Domain & Admin Catalog API
@@ -53,6 +53,19 @@ make migrate                                # alembic upgrade head
 alembic downgrade -1 && alembic upgrade head  # round-trip
 make shell-mysql                            # SHOW VARIABLES LIKE 'character_set%'
                                             # → utf8mb4 across the board
+```
+
+### After Phase 2 (verified 2026-05-02)
+
+```bash
+make docker-up-test                                # mysql-test on :3307 + redis
+set -a && source .env.test && set +a
+uv run alembic upgrade head                        # creates ping table via migration
+uv run alembic downgrade base && uv run alembic upgrade head   # round-trip
+docker compose exec -T mysql-test mysql -utest -ptest pharmacy_test \
+  -e "SHOW CREATE TABLE ping\G"                    # asserts InnoDB + utf8mb4 + 0900_ai_ci
+make test                                          # 42 tests pass (24 Phase 1 + 18 Phase 2)
+make lint && make type                             # both clean
 ```
 
 ### After Phase 4 (placeholder — from §23.1 of CLAUDE_CODE_PROMPTS)
@@ -94,6 +107,7 @@ Add: "smoke recipe runs against a fresh DB end-to-end" and the OWASP audit check
 
 > Things noticed during Phase 0 reading that are out of MVP scope or non-urgent. Move to a phase backlog or to `OPEN_QUESTIONS.md` when they become decisions.
 
+- [ ] **Phase 4 cleanup of `app/_ping_transient.py`** — delete the file, remove its import line in `migrations/env.py`, write a `DROP TABLE ping` migration. The placeholder shipped in Phase 2 to seed the migration pipeline.
 - [ ] Cyrillic synonym table (Soviet-era brand names → modern INN, e.g. `анальгин → метамизол`) — content seed in Phase 5 or Phase 7. Bishkek-specific must-haves: `анальгин`, `цитрамон`, `аспирин-кардио`. Coverage: at least 50 brand→ingredient pairs by launch.
 - [ ] Recall workflow as a real feature with `recalled` flag on batches — surfaced in `PRODUCT §5.6` as Phase 2; for MVP, recall = manual `damaged` movement with reason "recall: <batch_number>". Add to Phase 2 backlog.
 - [ ] Reservation timeout job cadence — see OPEN_QUESTIONS Q11. Default plan: single ARQ cron every 5 min checking both 24h-pending and 30min-card thresholds. Confirm at Phase 11.

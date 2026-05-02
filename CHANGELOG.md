@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project initialised; specs and master plan in place.
 - `BUILD_PLAN.md`, `BUILD_PROGRESS.md`, `OPEN_QUESTIONS.md` (12 substantive items), `RISKS.md` (top-10 ranked + watching list), `DECISION_LOG.md` template, this file.
 
+#### Phase 2 — Database Foundation & Alembic (2026-05-02)
+- **Async SQLAlchemy engine** in `app/core/db.py` — `AsyncEngine` from `settings.mysql_dsn`, `async_sessionmaker` with `expire_on_commit=False`, `get_db` FastAPI dependency, `session_scope` async context manager for workers/scripts.
+- **`GUID` BINARY(16) custom type** in `app/core/types.py` with byte-swapped layout that mirrors MySQL `UUID_TO_BIN(uuid_str, 1)` for B-tree locality. Round-trip verified via 6 unit tests including byte-order assertion against the documented swap.
+- **Inline `uuid7()`** in `app/core/types.py` — RFC 9562 UUID v7 (48-bit ms timestamp + version 7 + 12-bit rand_a + variant 0b10 + 62-bit rand_b). No new dep added.
+- **Alembic configured for async** — `alembic.ini`, `migrations/env.py` (async-friendly via `async_engine_from_config` + `connection.run_sync`), `migrations/script.py.mako`. `compare_type=True, compare_server_default=True`.
+- **First migration** `20260502_0740_init_ping.py` creates the placeholder `ping` table with `mysql_engine='InnoDB'`, `mysql_charset='utf8mb4'`, `mysql_collate='utf8mb4_0900_ai_ci'`. **Will be removed in Phase 4** along with `app/_ping_transient.py`.
+- **DB test fixtures** in `tests/conftest.py` — session-scoped `_migrated_db` runs `alembic downgrade base && upgrade head`; per-test `session` fixture uses a fresh `NullPool` engine to dodge the pytest-asyncio function-loop / module-engine mismatch.
+- **18 new tests**: `test_guid_type.py` (10 — byte-swap round-trip, byte-order, uuid7 properties), `test_db_charset.py` (5 — utf8mb4, 0900_ai_ci, sql_mode, ngram_token_size=2, InnoDB), `test_db_session.py` (2 — insert/read + Cyrillic round-trip), `test_alembic_smoke.py` (1 — full down/up round-trip via `asyncio.to_thread`).
+
 #### Phase 1 — Project Foundation (2026-05-02)
 - **Project metadata.** `pyproject.toml` with full BACKEND §2 dep set (FastAPI 0.115, SQLAlchemy 2.0.36 async, asyncmy 0.2.10, Pydantic 2.9, Alembic 1.14, Redis 5.2, ARQ 0.26, structlog 24.4, orjson 3.10, sentry-sdk 2.18, etc.); ruff + mypy + pytest config. `uv.lock` committed.
 - **Local dev infra.** `docker-compose.yml` with `mysql:8.4` + `redis:7-alpine` + profile-gated `mysql-test` (tmpfs, port 3307) and `api`/`worker` (build profile). `Makefile` with 18 targets including `dev`, `worker`, `lint`, `type`, `test`, `docker-up*`, `shell-mysql`, `pre-commit`. Multistage `Dockerfile` (builder → runtime, non-root user, healthcheck).

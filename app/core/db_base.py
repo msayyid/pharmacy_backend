@@ -1,8 +1,17 @@
 """SQLAlchemy declarative base + reusable mixins.
 
-Phase 1 scaffolds the ``Base`` and mixins so Phase 2 can land migrations
-without import shuffles. No models registered yet — ``Base.metadata`` is
-empty until Phase 2 imports them.
+* :class:`Base` — every model inherits from this.
+* :class:`TimestampMixin` — adds ``created_at`` / ``updated_at`` (UTC,
+  microsecond precision via MySQL ``DATETIME(fsp=6)``, server-defaulted
+  with ``utc_timestamp(6)`` so the value is independent of the session
+  ``time_zone`` variable).
+* :class:`SoftDeleteMixin` — adds nullable ``deleted_at`` for catalog
+  entities (``products``, ``categories``); operational rows
+  (``otp_codes``, ``carts``) are hard-deleted.
+
+The Phase 2 ``Ping`` placeholder model is registered in
+``app/_ping_transient.py``; Phase 4 will land the real domain models and
+remove the placeholder.
 
 Reference: BACKEND_BLUEPRINT.md §7.3.
 """

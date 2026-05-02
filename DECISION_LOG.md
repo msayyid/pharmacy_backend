@@ -130,6 +130,87 @@ Each entry:
 
 ---
 
+### 2026-05-02 — UUID7 generation inline (no new dep)
+**Phase:** 2
+**Context:** `BACKEND §2` does not pin a UUID7 library. `BACKEND §7.2` mentions `uuid_extensions` and a `uuid7` package as options. Project rule: smallest possible dep set.
+**Decision:** Implement `uuid7()` in `app/core/types.py` (~10 lines) per RFC 9562. 48-bit unix ms + version 7 + 12-bit rand_a + variant 0b10 + 62-bit rand_b.
+**Alternatives considered:** `uuid_extensions` PyPI package; `uuid7` package; wait for Python stdlib (3.13+ has it under PEP 9). All add a dep we don't need.
+**Rationale:** Algorithm is RFC-stable; tested via 4 unit tests (version, variant, monotonic ordering, ms-prefix correctness). One small function vs a transitive-dep risk and Phase 11+ ARQ-version-conflict surface.
+**Trade-offs:** We own the implementation. If RFC 9562 evolves, we update one function.
+**Reversibility:** Easy — swap to a library when one becomes desirable.
+**References:** `app/core/types.py:uuid7`; BACKEND §7.2.
+
+---
+
+### 2026-05-02 — Transient `Ping` placeholder model (`app/_ping_transient.py`)
+**Phase:** 2
+**Context:** Phase 2 spec requires an initial migration to prove the pipeline. Alembic `--autogenerate` needs at least one model registered on `Base.metadata`. No real domain models exist until Phase 4.
+**Decision:** Create `app/_ping_transient.py` with a minimal `Ping(id BIGINT PK, message VARCHAR(50))` model. Filename underscore-prefix and "transient" suffix telegraph disposability. The first Alembic revision creates the `ping` table.
+**Alternatives considered:**
+  - Inline the model in `migrations/env.py` — wrong layer (env.py is Alembic infrastructure).
+  - Park it in `app/domain/ops/models.py` — pollutes a real bounded context.
+  - Hand-write the migration without a model — defeats the autogenerate verification.
+**Rationale:** A single-file, clearly-disposable placeholder is the simplest way to exercise the autogenerate → upgrade → downgrade path end-to-end.
+**Trade-offs:** A second file to remove in Phase 4 (already in `BUILD_PROGRESS > Backlog`).
+**Reversibility:** Trivial — delete file + write `op.drop_table("ping")` migration.
+**References:** `app/_ping_transient.py`; CLAUDE_CODE_PROMPTS Phase 2.
+
+---
+
+### 2026-05-02 — Tests use per-test `NullPool` engine (not the module-level engine)
+**Phase:** 2
+**Context:** `app/core/db.py` exposes a module-level `AsyncEngine`. Pytest-asyncio creates a fresh event loop per test. Connections cached by the engine's pool become bound to whichever loop instantiated them; subsequent tests on a different loop fail with `RuntimeError: ... attached to a different loop`.
+**Decision:** The `session` fixture in `tests/conftest.py` constructs its own `create_async_engine(dsn, poolclass=NullPool)` and disposes it at end-of-test. The `_ping_table_exists` helper in `test_alembic_smoke.py` follows the same pattern.
+**Alternatives considered:**
+  - Session-scoped event loop (`asyncio_default_fixture_loop_scope = "session"`). Fragile across pytest-asyncio versions; couples all tests to a single loop.
+  - Reset the engine pool between tests. More invasive.
+**Rationale:** NullPool eliminates connection caching → no cross-loop interference. Slightly slower, but tests are sub-second total.
+**Trade-offs:** No connection reuse in tests; small TCP-handshake cost per test.
+**Reversibility:** Easy if pytest-asyncio adds first-class support for module-engine sharing.
+**References:** `tests/conftest.py:session`; `tests/integration/test_alembic_smoke.py:_ping_table_exists`.
+
+---
+
+### 2026-05-02 — Drive Alembic from async tests via `asyncio.to_thread`
+**Phase:** 2
+**Context:** `migrations/env.py` calls `asyncio.run(run_migrations_online())`. From an async test (already inside an event loop), `asyncio.run` raises `RuntimeError: asyncio.run() cannot be called from a running event loop`.
+**Decision:** Async tests that need to drive `alembic.command.upgrade/downgrade` wrap the call in `await asyncio.to_thread(...)`. This delegates the sync alembic call to a worker thread that has no running loop.
+**Alternatives considered:**
+  - Restructure env.py to detect an existing loop and reuse it. Would require asyncio.get_event_loop fallback that's fragile across Python versions.
+  - Test only via shelled-out `alembic` CLI. Slow and doesn't exercise the Python API.
+**Rationale:** `asyncio.to_thread` is the canonical way to call sync code from async. Alembic's command API is sync by design.
+**Trade-offs:** A tiny helper in tests (`_alembic` in `test_alembic_smoke.py`).
+**Reversibility:** Trivial.
+**References:** `tests/integration/test_alembic_smoke.py:_alembic`.
+
+---
+
+### 2026-05-02 — Removed Alembic `post_write_hooks` for ruff
+**Phase:** 2
+**Context:** `BACKEND §9` / typical Alembic projects post-format generated migrations. Initial config used `[post_write_hooks] hooks = ruff_format` with `type = console_scripts`. Alembic spawns a subprocess for the hook; that subprocess does NOT see our uv-managed venv's `ruff` console_scripts entry → `Could not find entrypoint console_scripts.ruff`.
+**Decision:** Remove the `post_write_hooks` section from `alembic.ini`. Document that `make fmt` formats migrations along with the rest of the codebase.
+**Alternatives considered:**
+  - Switch to `type = exec` with `executable = uv` — works, but adds a second tool dependency for hook discovery.
+  - Add `ruff` as a project-level entry point — tampering with packaging metadata for marginal gain.
+**Rationale:** `make fmt` is the single source of truth for formatting; running it after `make revision` is a one-liner contractor with the existing workflow.
+**Trade-offs:** Generated migrations are unformatted until `make fmt`; tolerable.
+**Reversibility:** Easy.
+**References:** `alembic.ini`.
+
+---
+
+### 2026-05-02 — Alembic `compare_type=True` + `compare_server_default=True`
+**Phase:** 2
+**Context:** Default Alembic `--autogenerate` ignores type widenings and server-default changes — silent drift between models and migrations.
+**Decision:** Set both flags in `migrations/env.py`. Accept the noisier diffs (especially around `func.utc_timestamp(6)` rendering) as the price of catching real drift.
+**Alternatives considered:** Defaults — silent drift is unacceptable per CLAUDE.md "Forced verification — before claiming complete" discipline.
+**Rationale:** Catch type/default drift at autogenerate time; manually adjust the rare false-positive.
+**Trade-offs:** Occasional manual migration editing to suppress benign diffs.
+**Reversibility:** Easy.
+**References:** `migrations/env.py`; BACKEND §9.3.
+
+---
+
 ### 2026-05-02 — Test MySQL on port 3307 (tmpfs); dev MySQL on 3306 (volume)
 **Phase:** 1
 **Context:** Tests should not contend with dev DB and should tear down fast.
