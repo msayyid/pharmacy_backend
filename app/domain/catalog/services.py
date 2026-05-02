@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.cache import invalidate as cache_invalidate
 from app.core.errors import ConflictError, NotFoundError, ValidationError
 from app.domain.catalog.models import (
     ActiveIngredient,
@@ -343,6 +344,8 @@ class CatalogAdminService:
             ip_address=ip_address,
             user_agent=user_agent,
         )
+        # Invalidate the storefront category-tree cache (BACKEND §18.4).
+        await cache_invalidate("v1:cat:tree:")
         return c
 
     async def update_category(
@@ -399,6 +402,7 @@ class CatalogAdminService:
                 )
 
         await self.categories.session.flush()
+        await cache_invalidate("v1:cat:tree:")
         await self.audit.record(
             admin_user_id=actor.id,
             action="update",
@@ -432,6 +436,7 @@ class CatalogAdminService:
 
         c.deleted_at = utcnow()
         await self.categories.session.flush()
+        await cache_invalidate("v1:cat:tree:")
         await self.audit.record(
             admin_user_id=actor.id,
             action="delete",

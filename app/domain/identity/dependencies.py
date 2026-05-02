@@ -77,6 +77,41 @@ async def get_current_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+async def get_optional_current_user(
+    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    settings: SettingsDep,
+    users: Annotated[UserRepository, Depends(get_user_repository)],
+    token_issuer: Annotated[TokenIssuer, Depends(get_token_issuer)],
+) -> User | None:
+    """Like :func:`get_current_user` but returns ``None`` instead of
+    raising on missing / invalid tokens.
+
+    Used by storefront endpoints (search, suggest) where authentication
+    is optional but the user_id, when present, is recorded for analytics.
+    """
+    if creds is None or not creds.credentials:
+        return None
+    try:
+        claims = token_issuer.decode(
+            creds.credentials,
+            expected_type=ACCESS_TYPE,
+            expected_kind=CUSTOMER_KIND,
+        )
+    except JWTError:
+        return None
+    try:
+        user_id = UUID(claims["sub"])
+    except (KeyError, ValueError):
+        return None
+    user = await users.get_by_id(user_id)
+    if user is None or not user.is_active:
+        return None
+    return user
+
+
+OptionalCurrentUser = Annotated[User | None, Depends(get_optional_current_user)]
+
+
 # ─── Admin session cookie ─────────────────────────────────────────────────────
 
 ADMIN_COOKIE_NAME = "admin_session"

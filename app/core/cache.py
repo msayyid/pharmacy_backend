@@ -46,8 +46,16 @@ async def invalidate(prefix: str) -> int:
 
     Uses ``SCAN`` so it's safe on large keyspaces (no ``KEYS *`` pitfalls).
     Batches ``DEL`` in groups of :data:`_INVALIDATE_BATCH_SIZE` for throughput.
+
+    Best-effort: if Redis is not initialised (e.g. unit tests that don't
+    spin up a Redis client), silently no-ops. The cache is a performance
+    optimisation; failure to invalidate must not break a write path. The
+    short TTLs (≤ 1h) self-heal any drift.
     """
-    r = get_redis()
+    try:
+        r = get_redis()
+    except RuntimeError:
+        return 0
     pattern = f"{prefix}*"
     deleted = 0
     batch: list[str] = []

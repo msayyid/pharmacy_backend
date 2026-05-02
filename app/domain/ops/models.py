@@ -1,26 +1,25 @@
 """Operations domain — admin audit log, SMS log, search log.
 
-Phase 5 lands :class:`AdminAuditLog` only. ``sms_log`` and ``search_log``
-arrive in Phase 10/11 (operational logs are written by integrations and
-the search service that don't exist yet).
+* Phase 5 — :class:`AdminAuditLog`.
+* Phase 7 — :class:`SearchLog` (storefront search analytics).
+* Phase 10/11 — ``sms_log`` (lands with the Nikita integration).
 
-The audit log records every admin mutation: who did what, on which entity,
-with before/after JSON. Phase 9 adds the read-side viewer endpoint
-(``F-ADM-AUD-001``).
-
-Reference: PHARMACY_BLUEPRINT_2.md §8.1; PRODUCT_BLUEPRINT.md §8.7.
+Reference: PHARMACY_BLUEPRINT_2.md §8.1, §8.3; PRODUCT_BLUEPRINT.md §8.7,
+§12.3.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import (
     JSON,
     BigInteger,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     func,
@@ -29,6 +28,7 @@ from sqlalchemy.dialects.mysql import DATETIME
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db_base import Base
+from app.core.types import GUID
 
 
 class AdminAuditLog(Base):
@@ -61,6 +61,54 @@ class AdminAuditLog(Base):
         Index("idx_audit_admin_created", "admin_user_id", "created_at"),
         Index("idx_audit_entity", "entity_type", "entity_id", "created_at"),
         Index("idx_audit_created", "created_at"),
+        {
+            "mysql_engine": "InnoDB",
+            "mysql_charset": "utf8mb4",
+            "mysql_collate": "utf8mb4_0900_ai_ci",
+        },
+    )
+
+
+class SearchLog(Base):
+    """One row per storefront search submission.
+
+    Surfaces "what people search for and find nothing" — the catalog-gap
+    + synonym-miss signal (PRODUCT §12.3). Authenticated user FK is
+    nullable; guest searches are recorded too. ``clicked_product_id`` is
+    settable from a follow-up endpoint (Phase 7 ships the table; the
+    click-recording endpoint is Phase 9 admin analytics).
+    """
+
+    __tablename__ = "search_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    query: Mapped[str] = mapped_column(String(255), nullable=False)
+    language_code: Mapped[str | None] = mapped_column(String(8))
+    user_id: Mapped[UUID | None] = mapped_column(
+        GUID,
+        ForeignKey("users.id", name="fk_search_log_user", ondelete="SET NULL"),
+    )
+    results_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    clicked_product_id: Mapped[UUID | None] = mapped_column(
+        GUID,
+        ForeignKey("products.id", name="fk_search_log_product", ondelete="SET NULL"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6),
+        nullable=False,
+        server_default=func.utc_timestamp(6),
+    )
+
+    __table_args__ = (
+        # Recent activity, ordered by time.
+        Index("idx_sl_created", "created_at"),
+        # "What did the customer just type?" — query lookup for popular
+        # searches and zero-result analytics.
+        Index("idx_sl_query", "query"),
+        # MySQL has no partial indexes; this composite serves the
+        # zero-result report (filter by ``results_count = 0`` in the
+        # query, then ORDER BY created_at DESC).
+        Index("idx_sl_results_created", "results_count", "created_at"),
         {
             "mysql_engine": "InnoDB",
             "mysql_charset": "utf8mb4",

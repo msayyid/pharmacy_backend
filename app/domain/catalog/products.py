@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+from app.core.cache import invalidate as cache_invalidate
 from app.core.errors import ConflictError, NotFoundError, ValidationError
 from app.core.time import utcnow
 from app.core.types import uuid7
@@ -315,6 +316,11 @@ class ProductService:
             ip_address=ip_address,
             user_agent=user_agent,
         )
+        # Invalidate the cached storefront detail (BACKEND §18.4).
+        # ``before["slug"]`` covers the case where the slug was renamed.
+        await cache_invalidate(f"v1:product:read:{before['slug']}:")
+        if product.slug != before["slug"]:
+            await cache_invalidate(f"v1:product:read:{product.slug}:")
         return product
 
     async def soft_delete_product(
@@ -331,6 +337,7 @@ class ProductService:
         before = _product_snapshot(product)
         product.deleted_at = utcnow()
         await self.products.session.flush()
+        await cache_invalidate(f"v1:product:read:{product.slug}:")
         await self.audit.record(
             admin_user_id=actor.id,
             action="delete",

@@ -13,6 +13,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project initialised; specs and master plan in place.
 - `BUILD_PLAN.md`, `BUILD_PROGRESS.md`, `OPEN_QUESTIONS.md` (12 substantive items), `RISKS.md` (top-10 ranked + watching list), `DECISION_LOG.md` template, this file.
 
+#### Phase 7 — Customer Discovery (2026-05-02) — complete
+
+- **`SearchLog` model** + migration + ``SearchLogRepository`` (`append`, `popular_queries`, `recent_zero_results`). Stored in ``app/domain/ops/``.
+- **`app/i18n/synonyms_ru.json`** — starter dictionary (~20 entries) covering PRODUCT §12.4: brand→INN (`панадол → парацетамол`, `анальгин → метамизол`, `цитрамон → парацетамол кофеин ацетилсалициловая кислота`); indication→symptom (`от головы → головная боль обезболивающее`, `жаропонижающее → температура …`); cold-family cluster; Latin↔Cyrillic.
+- **Storefront repository methods** in `app/domain/catalog/repositories.py`:
+    - `CategoryRepository.list_active_tree`, `SymptomRepository.list_active_with_translations`.
+    - `ProductRepository.list_for_category` (single-query JOIN on translation + branch_products + primary image; `in_stock_only` filter; sort = `relevance | price_asc | price_desc | name | newest`).
+    - `ProductRepository.list_for_symptom` — JOIN through `product_symptoms`.
+    - `ProductRepository.get_storefront_detail` — full eager-loaded view (translations, images, ingredients with ingredient translations, symptoms with symptom translations, manufacturer, category with category translations).
+    - `ProductRepository.list_substitutes` — same primary AI + dose, in stock, ≤ 4, ordered by price asc; falls back to same AI any-dose.
+    - `ProductRepository.storefront_search` — composite-ranked SQL via `text()`: `exact_name = 1000 + name_prefix = 500 + FULLTEXT MATCH × 10 + ingredient/symptom/manufacturer EXISTS bonuses`; `HAVING score > 0`; ORDER BY `score DESC, is_featured DESC, created_at DESC`.
+    - `ProductRepository.suggest` — prefix-match autocomplete.
+    - Helpers `_guid_bind` / `_guid_load` to handle `BINARY(16)` byte-swap on raw `text()` parameters and result rows (the GUID `TypeDecorator` only runs on ORM/Core column ops).
+- **Storefront schemas** (`app/domain/catalog/storefront_schemas.py`) — `CategoryNode`, `CategoryDetail`, `BreadcrumbItem`, `StorefrontProductCard`, `StorefrontProductDetail` (with localised name/description/usage/side-effects/contraindications/composition + manufacturer + category + ingredients + symptoms + images), `StorefrontSymptom`, `StorefrontBranch`, `SuggestResponse`, `SearchResultPage`, `StorefrontProductsPage`.
+- **`StorefrontCatalogService`** (`app/domain/catalog/storefront.py`) — `get_categories_tree` (cached `v1:cat:tree:<lang>` 1h), `get_category_with_products`, `get_symptom_with_products`, `get_product_detail` (cached `v1:product:read:<slug>:<lang>` 5m, dumped via `model_dump(mode="json")` for orjson compatibility), `list_substitutes`, `list_active_branches`, `list_active_symptoms`. Translation fallback `lang → ru → first` per PRODUCT §13.1.
+- **`SearchService`** (`app/domain/catalog/search.py`) — `search` (synonym expansion + ngram-friendly boolean MATCH + `search_log` append + popular_searches on zero-result), `suggest` (cached `v1:search:suggest:<lang>:<q>` 60s). Dictionary loaded once at module import.
+- **Cache invalidation hooks**:
+    - `CatalogAdminService.create_category / update_category / delete_category` → `invalidate("v1:cat:tree:")`.
+    - `ProductService.update_product / soft_delete_product` → `invalidate(f"v1:product:read:{slug}:")`. Slug-rename case handled by invalidating both old and new slug.
+    - `InventoryService.update_branch_product` → `invalidate(f"v1:product:read:{slug}:")`. Slug looked up via direct `select(Product.slug)` to avoid a cross-domain repo dep.
+    - `cache.invalidate` is best-effort: silently no-ops when Redis is uninitialised so unit tests without Redis don't break write paths.
+- **5 customer route modules** under `/api/v1`:
+    - `categories.py` — `GET /categories` (tree), `/{slug}` (detail+breadcrumb), `/{slug}/products` (paginated, `in_stock_only`, `manufacturer_id`, `sort`).
+    - `symptoms.py` — list + per-symptom products.
+    - `branches.py` — active branches.
+    - `products.py` — `GET /products/{slug}` (detail), `/{slug}/related` (substitutes).
+    - `search.py` — `GET /search` (with optional auth via `OptionalCurrentUser` for analytics user_id), `/search/suggest`.
+    - `BranchIdDep` resolver pinned to `branch_id=1` for MVP single-branch UX (DECISION_LOG'd).
+- **DI factories** — `get_search_log_repository`, `get_storefront_catalog_service`, `get_search_service`, `get_storefront_branch_id`.
+- **`OptionalCurrentUser`** dep (`app/domain/identity/dependencies.py`) — like `get_current_user` but returns `None` instead of raising on missing/invalid tokens.
+- **33 new tests (339 total)**:
+    - Integration: `test_storefront_repos.py` (9 — `list_active_tree` excludes inactive; `list_for_category` joins + in-stock filter; sort `price_asc/desc`; symptom join; substitutes (same AI + same dose excludes self); substitute fallback any-dose; suggest prefix; `get_storefront_detail` returns Product + BranchProduct).
+    - Unit: `test_search_quality.py` (11 — the 10 PRODUCT §12.1 queries; module-scoped committed fixture seeds Paracetamol/Aspirin/Ibuprofen/Metamizol once); `test_storefront_caching.py` (3 — categories tree caches + invalidates on mutation; product detail invalidates on bp update; `cache_invalidate` no-ops without Redis).
+    - E2E: `test_storefront_endpoints.py` (10 — guest tree → category products → symptom products → product detail + related → branches → search + suggest; out-of-stock filter default).
+- **`ProductTranslation`** + cached read tweak: `cache_get_or_set` now stores `model_dump(mode="json")` (orjson-friendly); read-side re-validates via Pydantic.
+- 339 tests pass; mypy --strict + ruff clean across 81 source files.
+
 #### Phase 6 — Inventory foundation (2026-05-02) — complete
 
 - **4 new tables** in `app/domain/inventory/models.py`: `suppliers`, `branch_products` (composite PK `(branch_id, product_id)` with cached `total_quantity` / `reserved_quantity`), `inventory_batches` (source-of-truth, with **per-batch** `quantity_reserved` for concurrency-safe FEFO), `stock_movements` (append-only audit). Plus `MovementType` `StrEnum`.

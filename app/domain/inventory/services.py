@@ -34,6 +34,7 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import invalidate as cache_invalidate
 from app.core.errors import (
     ConflictError,
     NotFoundError,
@@ -593,6 +594,21 @@ class InventoryService:
         if payload.low_stock_threshold is not None:
             bp.low_stock_threshold = payload.low_stock_threshold
         await self.session.flush()
+        # Price / availability changes flow into ``StorefrontProductDetail``;
+        # invalidate that product's detail cache. Look up the slug via
+        # a direct ORM query (cross-domain dep on ``Product.slug`` is
+        # acceptable; injecting ``ProductRepository`` for this one-liner
+        # is overkill).
+        from sqlalchemy import select as _select
+
+        from app.domain.catalog.models import Product as _Product
+
+        slug_row = await self.session.execute(
+            _select(_Product.slug).where(_Product.id == product_id)
+        )
+        slug = slug_row.scalar_one_or_none()
+        if slug is not None:
+            await cache_invalidate(f"v1:product:read:{slug}:")
         await self.audit.record(
             admin_user_id=actor.id,
             action="update",

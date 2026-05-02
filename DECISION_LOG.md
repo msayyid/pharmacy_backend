@@ -653,3 +653,104 @@ Side effects:
 **Reversibility:** Trivial.
 
 **References:** `app/api/admin_v1/inventory.py:_branch_admin`.
+
+---
+
+### 2026-05-02 — Composite search ranking weights (exact 1000, prefix 500, FULLTEXT × 10, ingredient 50, symptom 30, manufacturer 20)
+**Phase:** 7
+**Context:** PRODUCT §12.2 lists six tiers of search match quality but doesn't specify weights. Without concrete weights, every future change to search ranking is a re-derivation.
+
+**Decision:** Lock the weights in `app/domain/catalog/repositories.py:storefront_search`:
+
+* exact name match            → **1000**
+* name prefix                 → **500**
+* FULLTEXT MATCH score × 10
+* active ingredient match     → **50**
+* symptom-tag match           → **30**
+* manufacturer match          → **20**
+
+Computed as a single SQL `CASE` expression in the SELECT, ordered by `score DESC, is_featured DESC, created_at DESC`, filtered by `HAVING score > 0`.
+
+**Alternatives considered:** Tuned via Bayesian optimisation against zero-result logs (premature for MVP). Per-language weights (one set; can split later if `synonyms_used` analytics shows EN behaving differently).
+
+**Rationale:** Exact > prefix > fuzzy is the spec ordering. Multiplicative gaps (1000/500/10) ensure exact wins even when FULLTEXT fires high. The bonuses (50/30/20) only matter when name match is weak — they tie-break.
+
+**Trade-offs:** A pathological FULLTEXT score above ~50 could promote a fuzzy-match above an ingredient-only match. Acceptable: in practice MATCH scores cluster ≤ 5.
+
+**Reversibility:** Trivial — change the constants in the SELECT.
+
+**References:** `app/domain/catalog/repositories.py:_storefront_search`; PRODUCT §12.2; `tests/unit/test_search_quality.py`.
+
+---
+
+### 2026-05-02 — Synonyms in `app/i18n/synonyms_ru.json`, application-side expansion
+**Phase:** 7
+**Context:** PRODUCT §12.4 examples (`анальгин ↔ метамизол`, `от головы → головная боль обезболивающее`, etc.). The dictionary needs to be admin-maintainable but Phase 9's admin UI doesn't exist yet.
+
+**Decision:** Phase 7 ships the dictionary as a checked-in JSON file at `app/i18n/synonyms_ru.json`. `SearchService` loads it once at module import and OR-expands matched query tokens / phrases as additional terms in the boolean MATCH query. The `_doc` / `_xxx` keys are documentation-only and stripped at load time. Phase 9 adds an admin-managed table + invalidation; Phase 7 takes the simpler path.
+
+**Alternatives considered:** Index-time synonym expansion via MySQL stopwords/synonyms file (ngram parser doesn't support synonym dictionaries). Two-stage rewriter that runs Levenshtein on misses (deferred — RISK R-4 escalates to Meilisearch).
+
+**Rationale:** File-based is the smallest thing that works. Application-side expansion is testable, debuggable, and easy to extend.
+
+**Trade-offs:** Editing requires a redeploy. Small dictionary keeps the in-process load cost trivial.
+
+**Reversibility:** Easy — Phase 9 will move it to DB without changing the SearchService API.
+
+**References:** `app/i18n/synonyms_ru.json`; `app/domain/catalog/search.py:_load_synonyms`.
+
+---
+
+### 2026-05-02 — Storefront branch resolver hardcoded to `branch_id=1`
+**Phase:** 7
+**Context:** Multi-branch UX (branch picker on the storefront) is Phase 2 of the product roadmap. MVP runs single-branch (Bishkek Central). The customer-facing storefront still needs *some* branch_id resolution to query stock + price.
+
+**Decision:** `app/api/deps.py:get_storefront_branch_id` returns the constant `1` and is exposed as `BranchIdDep`. All storefront route handlers pin against this. Phase 2 swaps the body for header / cookie / query-param resolution. The seed scripts give the first branch id=1.
+
+**Alternatives considered:** Read from a `Cookie: branch_id=N`. Adds protocol surface area before the picker exists.
+
+**Rationale:** The seam is what matters; the dep makes the swap a one-liner.
+
+**Trade-offs:** E2E tests need their seeded `branch_products` rows pinned to `branch_id=1`. Documented inline in `tests/e2e/test_storefront_endpoints.py:_seed_full_storefront`.
+
+**Reversibility:** Trivial.
+
+**References:** `app/api/deps.py:get_storefront_branch_id`.
+
+---
+
+### 2026-05-02 — Cache invalidation is best-effort (no-op when Redis is missing)
+**Phase:** 7
+**Context:** `CatalogAdminService` / `ProductService` / `InventoryService.update_branch_product` call `cache.invalidate("v1:cat:tree:")` etc. on every mutation. Unit tests that exercise these services without spinning up Redis would crash at the `get_redis()` call.
+
+**Decision:** `app/core/cache.py:invalidate` catches `RuntimeError` from `get_redis()` and returns `0`. Failures to invalidate must not break a write path — the cache is a perf optimisation, and the short TTLs (≤ 1h) self-heal any drift within their window.
+
+**Alternatives considered:** Initialise Redis in every unit test that touches a service that mutates. Adds 100ms × ~50 tests = 5s to the suite for no benefit. A test-only `NoOpCache` injected via DI — would require wiring through repo/service constructors.
+
+**Rationale:** Smallest change, biggest test-suite ergonomics win. Production behaviour unaffected (Redis is initialised at app startup and stays up).
+
+**Trade-offs:** A crashed Redis in production silently degrades cache invalidation. Mitigation: TTL self-heals; Sentry will already report the original Redis error.
+
+**Reversibility:** Trivial — flip the try/except to `raise`.
+
+**References:** `app/core/cache.py:invalidate`.
+
+---
+
+### 2026-05-02 — `BINARY(16)` byte-swap helpers for raw `text()` storefront queries
+**Phase:** 7
+**Context:** The storefront list / search / substitutes methods use `text()` for FULLTEXT MATCH + composite-ranked CASE expressions (FULLTEXT scoring isn't expressible in SQLAlchemy ORM). The `GUID` `TypeDecorator` (`app/core/types.py`) byte-swaps `UUID ↔ BINARY(16)` only on ORM/Core column ops — `text()` parameters and result rows bypass it.
+
+Symptoms: substitutes excluded the source product's id but matched it (wrong-direction byte swap on bind); search results' `product_id` came back byte-swapped (decoded as if the bytes were already the original layout, producing a different UUID).
+
+**Decision:** Add `_guid_bind(UUID) -> bytes` and `_guid_load(bytes | UUID) -> UUID` helpers (`app/domain/catalog/repositories.py`) that mirror `GUID.process_bind_param` / `process_result_value`. Storefront `text()` queries call them on every UUID parameter and every UUID column read.
+
+**Alternatives considered:** Use `UUID_TO_BIN(:p, 1)` / `BIN_TO_UUID(:c, 1)` in the SQL — ties us to MySQL's exact UDF surface. Pure-ORM rewrite — gives up FULLTEXT scoring expressibility.
+
+**Rationale:** Keeps the byte-swap logic in one place across both the column-bound and the raw-text paths.
+
+**Trade-offs:** Two small helpers + a discipline ("call them whenever touching `BINARY(16)` in `text()`"). Test coverage on substitutes / search exercises this end-to-end.
+
+**Reversibility:** Trivial.
+
+**References:** `app/domain/catalog/repositories.py:_guid_bind`, `_guid_load`.

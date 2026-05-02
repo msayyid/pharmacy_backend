@@ -5,11 +5,11 @@
 
 ## Current state
 
-- **Active phase:** Phase 6 — Inventory Domain & Admin Inventory API _(complete)_
-- **Status:** **complete** — 306 tests pass (incl. concurrent-FEFO × 50 by default); mypy --strict clean across 73 source files.
+- **Active phase:** Phase 7 — Customer Discovery (Browse & Search) _(complete)_
+- **Status:** **complete** — 339 tests pass; mypy --strict clean across 81 source files.
 - **Last session:** 2026-05-02
-- **Sub-phases done:** 6.1 (models + migration with movement-sign CHECK), 6.2 (5 repositories incl. FEFO query with `FOR UPDATE SKIP LOCKED`), 6.3 (`InventoryService` + schemas), 6.4 (admin inventory routes + DI), 6.5 (factories + repo + service + concurrent-FEFO + E2E tests), 6.6 (dev fixtures + seed).
-- **Next session should:** start Phase 7 — Customer Discovery (Browse & Search). Re-read `PRODUCT §7, §8.1–8.4`, `PHARMACY §10–11.3`, `BACKEND §13`. Storefront catalog with FULLTEXT search and substitutes block; cart not yet.
+- **Sub-phases done:** 7.1 (search_log table + synonyms JSON), 7.2 (storefront repo methods incl. composite-ranked search), 7.3 (storefront schemas + StorefrontCatalogService + SearchService), 7.4 (cache invalidation hooks + DI), 7.5 (categories/symptoms/branches routes), 7.6 (products/search routes + router), 7.7 (33 new tests across repo / search quality / caching / e2e), 7.8 (hand-off + commit).
+- **Next session should:** start Phase 8 — Cart, Checkout & Place-Order (FEFO). Re-read `PRODUCT §7.1–7.2, §11`, `PHARMACY §7.1–7.2, §11.4`, `BACKEND §15` (idempotency). Phase 8 will reuse `InventoryService.allocate_for_order` + `reserve` from Phase 6 inside the place-order transaction.
 
 ## Phases
 
@@ -20,6 +20,7 @@
 - [x] Phase 4 — Identity & Authentication _(done 2026-05-02)_
 - [x] Phase 5 — Catalog Domain & Admin Catalog API _(done 2026-05-02)_
 - [x] Phase 6 — Inventory Domain & Admin Inventory API _(done 2026-05-02)_
+- [x] Phase 7 — Customer Discovery (Browse & Search) _(done 2026-05-02)_
 - [ ] Phase 7 — Customer Discovery (Browse & Search)
 - [ ] Phase 8 — Cart, Checkout & Place-Order (FEFO)
 - [ ] Phase 9 — Admin Order Lifecycle, Reports & Audit
@@ -175,6 +176,45 @@ FEFO_CONCURRENT_LOOPS=50 uv run pytest tests/integration/test_fefo_concurrent.py
 # → 50 passed (no oversell, no deadlock, no double-spend)
 
 make test                # 306 tests pass (224 prior + 82 in Phase 6)
+make lint && make type   # both clean
+```
+
+### After Phase 7 (verified 2026-05-02)
+
+```bash
+make docker-up-test                                  # mysql-test :3307 + redis
+set -a && source .env.test && set +a
+uv run alembic upgrade head                          # 6 migrations now (+ search_log)
+
+# Seed full storefront so curl returns rows.
+uv run python -m dev.fixtures.catalog.seed
+uv run python -m dev.fixtures.inventory.seed
+
+uv run uvicorn app.main:app --port 8765 > /tmp/uvicorn.log 2>&1 &
+sleep 1
+
+# Categories tree
+curl -s http://localhost:8765/api/v1/categories -H "Accept-Language: ru" | head -c 200
+
+# Product detail
+curl -s http://localhost:8765/api/v1/products/par-500-20 -H "Accept-Language: ru" | head -c 300
+
+# Search — the 10 PRODUCT §12.1 queries (each must return paracetamol):
+for q in 'парацетамол' 'пара' 'парацитамол' 'paracetamol' 'от головы' \
+         'жаропонижающее' 'панадол' 'головная боль' 'температура' 'анальгин'; do
+  echo "== $q"
+  curl -s -G "http://localhost:8765/api/v1/search" --data-urlencode "q=$q" \
+    -H "Accept-Language: ru" | python3 -m json.tool | head -20
+done
+
+# Suggest
+curl -sG http://localhost:8765/api/v1/search/suggest --data-urlencode 'q=пара' \
+  -H "Accept-Language: ru" | python3 -m json.tool
+
+# Branches list
+curl -s http://localhost:8765/api/v1/branches | python3 -m json.tool
+
+make test                # 339 tests pass (306 prior + 33 new in Phase 7)
 make lint && make type   # both clean
 ```
 

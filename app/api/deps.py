@@ -34,7 +34,9 @@ from app.domain.catalog.repositories import (
     ProductRepository,
     SymptomRepository,
 )
+from app.domain.catalog.search import SearchService
 from app.domain.catalog.services import CatalogAdminService
+from app.domain.catalog.storefront import StorefrontCatalogService
 from app.domain.identity.repositories import (
     AdminSessionRepository,
     AdminUserRepository,
@@ -56,7 +58,10 @@ from app.domain.inventory.repositories import (
     SupplierRepository,
 )
 from app.domain.inventory.services import InventoryService
-from app.domain.ops.repositories import AdminAuditLogRepository
+from app.domain.ops.repositories import (
+    AdminAuditLogRepository,
+    SearchLogRepository,
+)
 from app.domain.ops.services import AdminAuditLogService
 from app.integrations.sms.base import get_sms_queue
 
@@ -82,6 +87,23 @@ def get_redis_dep() -> Redis:
 
 
 RedisDep = Annotated[Redis, Depends(get_redis_dep)]
+
+
+# ─── Storefront branch resolver ──────────────────────────────────────────────
+
+
+def get_storefront_branch_id() -> int:
+    """Default branch for storefront reads.
+
+    MVP runs single-branch (Bishkek Central, ``branch_id=1``). Phase 2
+    of the product roadmap adds a branch picker; this dep is the
+    seam — change the body when the picker UX lands. Documented in
+    DECISION_LOG.
+    """
+    return 1
+
+
+BranchIdDep = Annotated[int, Depends(get_storefront_branch_id)]
 
 
 # ─── Repository factories ────────────────────────────────────────────────────
@@ -291,4 +313,36 @@ def get_inventory_service(
         batches=batches,
         movements=movements,
         audit=audit,
+    )
+
+
+def get_search_log_repository(session: DbSession) -> SearchLogRepository:
+    return SearchLogRepository(session)
+
+
+def get_storefront_catalog_service(
+    categories: Annotated[CategoryRepository, Depends(get_category_repository)],
+    products: Annotated[ProductRepository, Depends(get_product_repository)],
+    symptoms: Annotated[SymptomRepository, Depends(get_symptom_repository)],
+    branches: Annotated[BranchRepository, Depends(get_branch_repository)],
+) -> StorefrontCatalogService:
+    return StorefrontCatalogService(
+        categories=categories,
+        products=products,
+        symptoms=symptoms,
+        branches=branches,
+    )
+
+
+def get_search_service(
+    products: Annotated[ProductRepository, Depends(get_product_repository)],
+    categories: Annotated[CategoryRepository, Depends(get_category_repository)],
+    symptoms: Annotated[SymptomRepository, Depends(get_symptom_repository)],
+    search_log: Annotated[SearchLogRepository, Depends(get_search_log_repository)],
+) -> SearchService:
+    return SearchService(
+        products=products,
+        categories=categories,
+        symptoms=symptoms,
+        search_log=search_log,
     )

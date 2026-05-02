@@ -1,8 +1,10 @@
-"""Operations domain — admin audit log repository.
+"""Operations domain — admin audit log + search log repositories.
 
-Phase 5 lands the audit log writer; Phase 9 adds the read-side viewer.
+* Phase 5 — audit log writer.
+* Phase 7 — search log writer + popular-searches read.
+* Phase 9 — admin viewer endpoints (read side).
 
-Reference: PHARMACY_BLUEPRINT_2.md §8.1.
+Reference: PHARMACY_BLUEPRINT_2.md §8.1, §8.3.
 """
 
 from __future__ import annotations
@@ -10,11 +12,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.ops.models import AdminAuditLog
+from app.domain.ops.models import AdminAuditLog, SearchLog
 
 
 class AdminAuditLogRepository:
@@ -73,3 +76,53 @@ class AdminAuditLogRepository:
         total = (await self.session.execute(total_stmt)).scalar_one()
         items = (await self.session.execute(items_stmt)).scalars().all()
         return (items, total)
+
+
+class SearchLogRepository:
+    """Append-only writer + analytics reads on ``search_log`` (Phase 7)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def append(
+        self,
+        *,
+        query: str,
+        language_code: str | None,
+        user_id: UUID | None,
+        results_count: int,
+    ) -> SearchLog:
+        row = SearchLog(
+            query=query,
+            language_code=language_code,
+            user_id=user_id,
+            results_count=results_count,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def popular_queries(
+        self, *, limit: int = 5, language_code: str | None = None
+    ) -> Sequence[str]:
+        """Top-N non-zero-result queries by frequency.
+
+        Used as the empty-state "Try these" list. Lower-cases the
+        ``query`` so casing variants collapse.
+        """
+        q = func.lower(SearchLog.query).label("q")
+        stmt = select(q, func.count().label("c")).where(SearchLog.results_count > 0)
+        if language_code is not None:
+            stmt = stmt.where(SearchLog.language_code == language_code)
+        stmt = stmt.group_by(q).order_by(func.count().desc()).limit(limit)
+        return [row.q for row in (await self.session.execute(stmt)).all()]
+
+    async def recent_zero_results(self, *, limit: int = 50) -> Sequence[SearchLog]:
+        """Catalog-gap signal — recent searches that found nothing."""
+        stmt = (
+            select(SearchLog)
+            .where(SearchLog.results_count == 0)
+            .order_by(SearchLog.created_at.desc())
+            .limit(limit)
+        )
+        return (await self.session.execute(stmt)).scalars().all()

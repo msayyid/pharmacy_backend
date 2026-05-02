@@ -1,0 +1,42 @@
+{
+  "_doc": "Russian-language storefront search synonyms. Application-side expansion: query word lower-cased, looked up here, and the values are appended as OR-terms to the boolean MATCH query. Phase 9 will add an admin-managed UI; for Phase 7 this is the source of truth. PRODUCT §12.4.",
+
+  "_brand_to_inn": "Soviet-era and modern brand names mapped to international non-proprietary names (INN). The values are what the catalog stores in product/ingredient names.",
+  "панадол": ["парацетамол"],
+  "анальгин": ["метамизол"],
+  "цитрамон": ["парацетамол", "кофеин", "ацетилсалициловая кислота"],
+  "аспирин": ["ацетилсалициловая кислота"],
+  "нурофен": ["ибупрофен"],
+  "тайленол": ["парацетамол"],
+  "омез": ["омепразол"],
+
+  "_indication_to_symptom": "Plain-language complaints mapped to indications and symptom names.",
+  "от головы": ["головная боль", "обезболивающее"],
+  "таблетки от головы": ["головная боль", "обезболивающее"],
+  "болит голова": ["головная боль", "обезболивающее"],
+  "от температуры": ["жаропонижающее", "температура", "лихорадка"],
+  "жаропонижающее": ["температура", "лихорадка", "парацетамол", "ибупрофен"],
+  "обезболивающее": ["боль", "анальгетик"],
+  "от боли": ["обезболивающее", "анальгетик"],
+
+  "_cold_family": "Common-cold cluster — these collapse together at the storefront level (PRODUCT §12.4 example).",
+  "простуда": ["орви", "грипп"],
+  "орви": ["простуда", "грипп"],
+  "грипп": ["простуда", "орви"],
+
+  "_stomach_family": "Stomach / GI-tract cluster.",
+  "боль в животе": ["живот болит", "stomach pain", "спазмы"],
+  "живот болит": ["боль в животе", "спазмы"],
+  "изжога": ["омепразол", "антацид", "гастрит"],
+
+  "_throat_family": "Throat / cough cluster — note: dry vs wet cough are NOT collapsed (PRODUCT §12.4).",
+  "болит горло": ["боль в горле", "горло"],
+  "боль в горле": ["болит горло", "горло"],
+
+  "_latin_to_cyrillic": "Latin spellings of common INNs — customers sometimes type them.",
+  "paracetamol": ["парацетамол"],
+  "ibuprofen": ["ибупрофен"],
+  "aspirin": ["ацетилсалициловая кислота"],
+  "metamizole": ["метамизол"],
+  "omeprazole": ["омепразол"]
+}
