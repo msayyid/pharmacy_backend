@@ -37,6 +37,54 @@ curl http://localhost:8000/health
 
 ---
 
+## Quickstart with MAMP (local dev, no Docker)
+
+If you already run MAMP (MySQL on :3306) on macOS and want to skip the
+Docker stack:
+
+```bash
+# 1. Install + start Homebrew Redis (one-time).
+brew install redis
+brew services start redis
+redis-cli ping                       # → PONG
+
+# 2. Confirm MAMP MySQL has the pharmacy DB.
+/Applications/MAMP/Library/bin/mysql80/bin/mysql -uroot -proot \
+  -h127.0.0.1 -P3306 -e "CREATE DATABASE IF NOT EXISTS pharmacy
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
+
+# 3. Point .env at MAMP (the .env in the repo, generated locally).
+#    Default DSN: mysql+asyncmy://root:root@localhost:3306/pharmacy
+#    Default Redis: redis://localhost:6379/0
+
+# 4. Apply migrations.
+uv sync
+set -a && source .env && set +a
+uv run alembic upgrade head
+
+# 5. Run the API.
+make dev                             # http://localhost:8000
+open http://localhost:8000/docs      # Swagger UI
+```
+
+### Logging in via Swagger UI
+
+The customer API supports two parallel auth flows (additive — both
+work):
+
+* **Email + password (dev convenience)** —
+  `POST /api/v1/auth/register` → `POST /api/v1/auth/login` →
+  paste `Bearer <access_token>` into the Swagger "Authorize" dialog.
+  Production deploys still use SMS-OTP per spec; this is a local-dev
+  convenience added on top of v1.0.0-rc1 (see `DECISION_LOG.md`).
+
+* **SMS-OTP (spec flow)** — `POST /api/v1/auth/otp/request` then
+  `POST /api/v1/auth/otp/verify`. The default `SMS_PROVIDER=fake`
+  logs the OTP code to the uvicorn output instead of sending a real
+  SMS — copy the digits from the `sms_enqueued` log line.
+
+---
+
 ## Daily commands
 
 ```bash

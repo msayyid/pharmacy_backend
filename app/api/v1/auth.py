@@ -22,7 +22,10 @@ from app.domain.identity.schemas import (
     OtpRequestIn,
     OtpRequestOut,
     OtpVerifyIn,
+    PasswordLoginIn,
     RefreshIn,
+    RegisterIn,
+    RegisterOut,
     TokenPairOut,
 )
 from app.domain.identity.services import AuthService, OtpService
@@ -89,3 +92,64 @@ async def logout(
     service: Annotated[AuthService, Depends(get_auth_service)],
 ) -> None:
     await service.logout(payload.refresh_token)
+
+
+# ─── Password auth (dev convenience — see DECISION_LOG) ─────────────────────
+
+
+@router.post(
+    "/register",
+    response_model=RegisterOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register a customer with email + password (dev)",
+    description=(
+        "Create a customer account using email + argon2id password + phone. "
+        "Returns the user id + a JWT pair. **Local-dev convenience added on "
+        "top of v1.0.0-rc1.** Production deploys still use SMS-OTP per spec "
+        "(see PRODUCT §17 + PHARMACY §3.2)."
+    ),
+)
+async def register(
+    payload: RegisterIn,
+    settings: SettingsDep,
+    service: Annotated[AuthService, Depends(get_auth_service)],
+) -> RegisterOut:
+    user, pair = await service.register_with_password(
+        email=str(payload.email),
+        password=payload.password,
+        phone=payload.phone,
+        first_name=payload.first_name,
+        last_name=payload.last_name,
+        preferred_language=payload.preferred_language,
+    )
+    return RegisterOut(
+        user_id=user.id,
+        access_token=pair.access,
+        refresh_token=pair.refresh,
+        expires_in=settings.jwt_access_ttl_minutes * 60,
+    )
+
+
+@router.post(
+    "/login",
+    response_model=TokenPairOut,
+    summary="Log in with email + password (dev)",
+    description=(
+        "Email + argon2id password verify → JWT pair. Returns the same shape "
+        "as ``/auth/otp/verify``. **Local-dev convenience.**"
+    ),
+)
+async def password_login(
+    payload: PasswordLoginIn,
+    settings: SettingsDep,
+    service: Annotated[AuthService, Depends(get_auth_service)],
+) -> TokenPairOut:
+    pair = await service.login_with_password(
+        email=str(payload.email),
+        password=payload.password,
+    )
+    return TokenPairOut(
+        access_token=pair.access,
+        refresh_token=pair.refresh,
+        expires_in=settings.jwt_access_ttl_minutes * 60,
+    )

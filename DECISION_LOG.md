@@ -1068,3 +1068,15 @@ Symptoms: substitutes excluded the source product's id but matched it (wrong-dir
 **Trade-offs:** A future bug in the under-tested branches could be undetected longer than necessary. Mitigated by the structured-log + Sentry coverage on every error path — production will surface them faster than a test would have.
 **Reversibility:** Easy — write more tests in any future phase.
 **References:** `LAUNCH_CHECKLIST.md` "Coverage" line; `pyproject.toml` test config; coverage report from `make test --cov`.
+
+---
+
+### 2026-05-03 — Local-dev password auth alongside SMS-OTP (deliberate spec deviation)
+**Phase:** post-12 dev convenience
+**Context:** PRODUCT §17 + PHARMACY §3.2 specify SMS-OTP as the customer auth mechanism. SMS-OTP requires a working SMS provider; the production adapter (Nikita) is scaffold-only pending OPEN_QUESTIONS Q13. The fake adapter logs the OTP code to uvicorn output, which works but adds friction for a developer running the app locally to click around the Swagger UI.
+**Decision:** Add a parallel email + argon2id-password flow purely for local dev. Two new routes — `POST /api/v1/auth/register` and `POST /api/v1/auth/login` — return the same JWT pair shape as the OTP verify endpoint. The new routes write to a nullable `password_hash` column on `users` (migration `151a5f8620f0`); existing OTP-only users keep `None`. **The SMS-OTP routes are unchanged and still work** — this is additive, not a replacement.
+**Alternatives considered:** (a) Replace OTP entirely — would break the spec-defined production flow + waste the Phase 4 work. (b) Add a debug endpoint that returns the OTP code in the response — easier to add but leaves a "development-only" route in the codebase that a copy-paste deploy could expose. (c) Inject the OTP code into the JSON response when `settings.debug` is True — same risk. (d) Document "read OTP from logs" — high friction, doesn't solve the problem.
+**Rationale:** The new routes are explicit + self-contained + use the same `argon2id` + `password_pepper` primitives that the admin login already uses (Phase 4). They live next to the OTP routes in `app/api/v1/auth.py` so they're discoverable in Swagger. Production deploys flip a feature gate or just don't expose the routes (a future cleanup); for now the routes ship in every build with clear "dev convenience" docstrings.
+**Trade-offs:** Two auth surfaces means two ways to get a JWT, which doubles the rate-limit + abuse surface. For local dev this is fine; for production it's a flag-it-off-or-rate-limit-it-harder concern. The CHANGELOG flags this as a post-1.0.0-rc1 addition that needs a feature flag before any production deploy.
+**Reversibility:** Easy — drop the two routes + the column; existing users (with `password_hash=NULL`) keep working through OTP.
+**References:** `app/api/v1/auth.py` `register` + `password_login`; `app/domain/identity/services.py:AuthService.register_with_password` + `:login_with_password`; `migrations/versions/20260503_1338_add_password_hash_to_users_dev_auth.py`; `tests/e2e/test_password_auth.py`; PRODUCT §17, PHARMACY §3.2 (specs unchanged — this is a dev-only override).

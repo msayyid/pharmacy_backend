@@ -57,6 +57,10 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     # default collation (utf8mb4_0900_ai_ci). Multiple NULLs are allowed by
     # InnoDB's UNIQUE semantics.
     email: Mapped[str | None] = mapped_column(String(255))
+    # Optional argon2id hash. SMS-OTP users have ``None``; password-auth
+    # users (dev convenience added 2026-05-03 — see DECISION_LOG) have a
+    # hash here. Two parallel auth flows by design.
+    password_hash: Mapped[str | None] = mapped_column(String(255))
     first_name: Mapped[str | None] = mapped_column(String(80))
     last_name: Mapped[str | None] = mapped_column(String(80))
     date_of_birth: Mapped[date | None] = mapped_column()

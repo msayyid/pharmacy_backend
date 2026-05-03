@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(none yet — last release v1.0.0-rc1)
+### Added (post-v1.0.0-rc1 — local-dev convenience, not a release)
+
+- **Email + password customer auth** alongside the SMS-OTP flow:
+  `POST /api/v1/auth/register` (email + password + phone → user_id +
+  JWT pair), `POST /api/v1/auth/login` (email + password → JWT pair).
+  Migration `151a5f8620f0` adds nullable `users.password_hash`. SMS-OTP
+  routes unchanged. Production deploys still use SMS-OTP per spec —
+  see `DECISION_LOG.md` "Local-dev password auth alongside SMS-OTP".
+- **5 new e2e tests** (476 total): `tests/e2e/test_password_auth.py`
+  covering register / login / register-then-/me / duplicate-email /
+  wrong-password (no enumeration).
+- **README "Quickstart with MAMP"** section — full path from `brew
+  install redis` through `make dev` against MAMP MySQL (no Docker
+  needed for the DB).
 
 ## [1.0.0-rc1] - 2026-05-03
 

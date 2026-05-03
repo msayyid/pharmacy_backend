@@ -83,6 +83,48 @@ class LogoutIn(BaseModel):
     refresh_token: str
 
 
+# ─── Password auth (dev convenience — see DECISION_LOG) ──────────────────────
+
+
+class RegisterIn(BaseModel):
+    """``POST /api/v1/auth/register`` — email + password + phone.
+
+    Production deploys still use SMS-OTP per spec; this is a local-dev
+    convenience added on top of v1.0.0-rc1.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    email: EmailStr
+    password: Annotated[str, Field(min_length=8, max_length=128)]
+    phone: str
+    first_name: Annotated[str | None, Field(max_length=80)] = None
+    last_name: Annotated[str | None, Field(max_length=80)] = None
+    preferred_language: Literal["ru", "ky", "en"] = "ru"
+
+    @field_validator("phone")
+    @classmethod
+    def _phone(cls, v: str) -> str:
+        return _validate_phone(v)
+
+
+class PasswordLoginIn(BaseModel):
+    """``POST /api/v1/auth/login`` — email + password → JWT pair."""
+
+    model_config = ConfigDict(extra="forbid")
+    email: EmailStr
+    password: Annotated[str, Field(min_length=1, max_length=128)]
+
+
+class RegisterOut(BaseModel):
+    """Register returns the user's id + the full token pair."""
+
+    user_id: UUID
+    access_token: str
+    refresh_token: str
+    token_type: Literal["bearer"] = "bearer"  # noqa: S105 — OAuth scheme literal
+    expires_in: int
+
+
 # ─── /me ──────────────────────────────────────────────────────────────────────
 
 

@@ -28,6 +28,7 @@ from app.core.errors import (
     InvalidOTPError,
     NotFoundError,
     PermissionDeniedError,
+    ValidationError,
 )
 from app.core.i18n import resolve_language, t
 from app.core.logging import get_logger
@@ -40,6 +41,8 @@ from app.core.security import (
     TokenPair,
     generate_numeric_code,
     hash_otp,
+    hash_password,
+    normalise_phone,
     verify_otp,
     verify_password,
 )
@@ -236,6 +239,87 @@ class AuthService:
         except JWTError:
             return
         await _delete_refresh_jti(claims["jti"])
+
+    # ─── Password auth (dev convenience — see DECISION_LOG) ──────────────
+
+    async def register_with_password(
+        self,
+        *,
+        email: str,
+        password: str,
+        phone: str,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        preferred_language: str = "ru",
+    ) -> tuple[User, TokenPair]:
+        """Create a customer with email + argon2id password + phone, then
+        issue a JWT pair. Local-dev convenience added on top of v1.0.0-rc1.
+
+        Validation:
+        * email must be unique (uq_users_email).
+        * phone must be unique + match the E.164 format check the DB
+          enforces; we normalise via :func:`normalise_phone` before insert.
+        * Password is argon2id-hashed with the global pepper.
+
+        ``is_phone_verified`` is set to True for password-auth accounts
+        because they bypass the OTP step entirely (the trade-off is
+        documented — production deploys keep SMS-OTP per spec).
+        """
+        normalised_email = email.strip().lower()
+        normalised_phone = normalise_phone(phone)
+
+        existing_email = await self.users.get_by_email(normalised_email)
+        if existing_email is not None:
+            raise ValidationError(code="email_already_registered")
+        existing_phone = await self.users.get_by_phone(normalised_phone)
+        if existing_phone is not None:
+            raise ValidationError(code="phone_already_registered")
+
+        from app.core.types import uuid7
+
+        user = User(
+            id=uuid7(),
+            phone=normalised_phone,
+            email=normalised_email,
+            password_hash=hash_password(password, self.settings.password_pepper.get_secret_value()),
+            first_name=first_name,
+            last_name=last_name,
+            preferred_language=preferred_language,
+            is_phone_verified=True,
+            is_active=True,
+        )
+        await self.users.add(user)
+
+        pair = self.token_issuer.issue_pair(subject=str(user.id), kind=CUSTOMER_KIND)
+        await _store_refresh_jti(
+            jti=pair.refresh_jti,
+            user_id=str(user.id),
+            ttl_seconds=self.settings.jwt_refresh_ttl_days * 86400,
+        )
+        await self.users.update_last_login(user)
+        return (user, pair)
+
+    async def login_with_password(self, *, email: str, password: str) -> TokenPair:
+        """Email + argon2id verify → JWT pair. Generic 401 on either
+        unknown-email OR wrong-password (no user enumeration)."""
+        normalised_email = email.strip().lower()
+        user = await self.users.get_by_email(normalised_email)
+        if user is None or user.password_hash is None or not user.is_active:
+            raise AuthenticationError(code="invalid_credentials")
+
+        if not verify_password(
+            password, user.password_hash, self.settings.password_pepper.get_secret_value()
+        ):
+            raise AuthenticationError(code="invalid_credentials")
+
+        pair = self.token_issuer.issue_pair(subject=str(user.id), kind=CUSTOMER_KIND)
+        await _store_refresh_jti(
+            jti=pair.refresh_jti,
+            user_id=str(user.id),
+            ttl_seconds=self.settings.jwt_refresh_ttl_days * 86400,
+        )
+        await self.users.update_last_login(user)
+        return pair
 
 
 # ─── AccountService ───────────────────────────────────────────────────────────

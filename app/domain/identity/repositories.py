@@ -67,6 +67,12 @@ class UserRepository:
         user.last_login_at = utcnow()
         await self.session.flush()
 
+    async def add(self, user: User) -> None:
+        """Insert a fully-formed User row + flush. Used by the
+        password-auth register flow (dev convenience added 2026-05-03)."""
+        self.session.add(user)
+        await self.session.flush()
+
 
 # ─── UserAddressRepository ────────────────────────────────────────────────────
 
