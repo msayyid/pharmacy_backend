@@ -7,11 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+(none yet — last release v1.0.0-rc1)
+
+## [1.0.0-rc1] - 2026-05-03
+
+The launch candidate. All 12 phases per `specs/CLAUDE_CODE_PROMPTS.md` complete. **471 tests pass; mypy --strict + ruff clean across 119 source files; coverage 80% (target 85% — gap surfaced honestly in `LAUNCH_CHECKLIST.md`).** Production deploy still blocked on `OPEN_QUESTIONS Q13/Q14/Q15` (vendor-doc verification for Nikita SMS / Freedom Pay / Cloudflare R2); the architecture is fully exercised through the fakes.
+
 ### Added
 
 #### Phase 0 (2026-05-02)
 - Project initialised; specs and master plan in place.
 - `BUILD_PLAN.md`, `BUILD_PROGRESS.md`, `OPEN_QUESTIONS.md` (12 substantive items), `RISKS.md` (top-10 ranked + watching list), `DECISION_LOG.md` template, this file.
+
+#### Phase 12 — Hardening & Launch Readiness (2026-05-03) — complete
+
+- **Observability**:
+    - `app/core/metrics.py` — module-local `CollectorRegistry` + `pharmacy_http_requests_total` Counter + `pharmacy_http_request_duration_seconds` Histogram + `pharmacy_worker_jobs_total` Counter. New `prometheus-client>=0.21,<1.0` dep.
+    - `app/api/middleware.py:MetricsMiddleware` — records HTTP counter + histogram per templated route + status; excludes `/metrics` + `/health` to avoid recursion + noise.
+    - `app/api/health.py` — added `GET /health/ready` (DB `SELECT 1` + Redis `PING`; 503 with structured `{db, redis, version}` body on either failure) + `GET /metrics` (Prometheus exposition; bearer-token guarded via `settings.metrics_token`; absent token → 401 lock-by-default; module-local registry keeps third-party counters out).
+    - `Settings.metrics_token: SecretStr | None`; `Settings.git_sha: str = "dev"` (Sentry release tagging).
+- **Security headers**:
+    - `app/api/middleware.py:SecurityHeadersMiddleware` — injects `Strict-Transport-Security` (HTTPS-only via `X-Forwarded-Proto: https` detection), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` (API serves JSON only — strictest CSP that works).
+    - `Sentry release` tag is now `pharmacy-api@<version>+<git_sha>` (CI sets `GIT_SHA` env var); sample rates bumped to `traces_sample_rate=0.1` + `profiles_sample_rate=0.1`.
+- **Phase 11 deferred route swaps**:
+    - `POST /admin/v1/products/{id}/images` — inline path for ≤2 MB; larger uploads write to a `tempfile.NamedTemporaryFile` + enqueue `process_image_upload` via the new `ArqPoolDep`, return `{"status":"queued","job_id":...}`. `_safe_suffix` whitelists 4 image extensions on the temp file.
+    - `POST /admin/v1/products/import/apply` — inline for ≤500 rows; larger CSVs base64-encode + enqueue `process_product_import` with a generated `import_id`, return `{"status":"queued","import_id","job_id","status_url"}`.
+    - `GET /admin/v1/products/imports/{import_id}` — reads the Phase 11 Redis hash `v1:import:<id>` for poll-style progress; 404 on missing.
+    - `get_arq_pool` switched to lazy-init: if lifespan didn't populate `app.state.arq_pool` (tests via ASGITransport), creates one on-demand and caches it. Same `ArqPoolDep` for routes.
+- **Documentation**:
+    - `docs/ARCHITECTURE.md` — 1-page system overview (stack, layering, persistence, lifecycle, jobs, observability, security, deployment).
+    - `docs/CONTRIBUTING.md` — branch + commit + PR conventions, "what goes where", new-endpoint / new-job / new-migration cookbook.
+    - `docs/runbooks/deploy.md` — production deploy via `docker-compose.production.yml` (env vars, migration step, healthcheck verification, smoke test).
+    - `docs/runbooks/rollback.md` — code-only + code+migration rollback procedures with project-specific caveats per migration.
+    - `docs/runbooks/backups.md` — schedule, manual backup, monthly restore drill, emergency production restore.
+    - `docs/runbooks/incidents.md` — playbooks for stuck ARQ job, missed payment webhook, disk full, Redis down, image upload silent fail.
+    - `LAUNCH_CHECKLIST.md` — DoD mirror with each item ✔/⚠/✗ and pointers to verification artifacts; explicit production-blocker table.
+- **Deployment artifacts**:
+    - `docker-compose.production.yml` — pinned `IMAGE_TAG`, env-file driven, healthchecks on api + worker, restart=`unless-stopped`, mysql with `--max-connections=200`, redis with `--maxmemory 512mb --maxmemory-policy allkeys-lru --appendonly yes`. API binds localhost-only (reverse proxy fronts).
+    - `bin/backup_db.sh` — mysqldump (`--single-transaction --quick --skip-lock-tables`) | gzip → local file with 7-day retention. R2 upload commented pending Q15.
+    - `Dockerfile` — `ARG GIT_SHA` + `LABEL org.opencontainers.image.revision="${GIT_SHA}"` + `ENV GIT_SHA="${GIT_SHA}"` so Sentry release tag matches the built image.
+    - `Makefile` — `make security-audit` (`pip-audit`) + `make backup-local`.
+- **Phase 12.7 audit fixes**:
+    - Migration `22f5c07c42b5` — `idx_orders_recipient_phone` (admin support phone lookup per PRODUCT §18.2) + `idx_payments_provider_txn` (used by the `payment_reconcile` worker every 5 minutes).
+    - `OrderRepository.list_for_user_paginated` adds `selectinload(Order.items, Order.history)` — N+1 fix for customer order-history endpoint.
+    - `python-jose>=3.5` (was `>=3.3`) — clears CVE-2024-49638 (asymmetric key confusion).
+- **3 new e2e tests** (471 total): `test_import_async_flow.py` covering the >500-row dispatch path + the polling endpoint + 404 on unknown import_id.
+- **Resolved OPEN_QUESTIONS**: Q11 already closed in Phase 11.
+- **Production-blockers documented**: Q13 (Nikita SMS contract), Q14 (Freedom Pay signature/webhook), Q15 (R2 + boto3 quirks) — block real-adapter production traffic; fakes carry every test. See `LAUNCH_CHECKLIST.md` for the punchlist.
 
 #### Phase 11 — Background Jobs (ARQ) & Scheduled Tasks (2026-05-03) — complete
 

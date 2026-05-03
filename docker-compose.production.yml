@@ -1,0 +1,88 @@
+# Production deployment topology — single-VPS docker-compose (PHARMACY §22.2 MVP).
+#
+# Differences from the dev compose:
+# * Pinned image tag (set via $IMAGE_TAG env var; defaults to "latest" but
+#   that should be overridden in the production .env to e.g. v1.0.0-rc1).
+# * No volume bind-mount of source code (the image is the source of truth).
+# * env_file is .env.production (NOT committed).
+# * Healthcheck on api + worker.
+# * restart=unless-stopped (the VPS reboot scenario).
+# * No mysql-test profile (production never runs the test DB).
+
+services:
+  mysql:
+    image: mysql:8.4
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_0900_ai_ci
+      --sql-mode=STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ONLY_FULL_GROUP_BY,ERROR_FOR_DIVISION_BY_ZERO
+      --innodb-default-row-format=DYNAMIC
+      --ngram-token-size=2
+      --max-connections=200
+    env_file: .env.production
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-pharmacy}
+      MYSQL_USER: ${MYSQL_USER:-pharmacy}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+    # NOTE: no port mapping — mysql is internal-only. Backups via the
+    # `bin/backup_db.sh` script run on the host using docker exec.
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    image: ghcr.io/${REPO:-msayyid/pharmacy_backend}:${IMAGE_TAG:-latest}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --no-access-log
+    env_file: .env.production
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    ports:
+      - "127.0.0.1:8000:8000"  # bind localhost-only; reverse proxy fronts.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  worker:
+    image: ghcr.io/${REPO:-msayyid/pharmacy_backend}:${IMAGE_TAG:-latest}
+    command: arq app.workers.settings.WorkerSettings
+    env_file: .env.production
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      # ARQ doesn't expose a health endpoint; check the process is alive
+      # via `pgrep` against the arq command line.
+      test: ["CMD-SHELL", "pgrep -f 'arq app.workers.settings.WorkerSettings' >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+  redis_data:

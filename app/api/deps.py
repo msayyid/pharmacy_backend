@@ -117,18 +117,22 @@ from arq import ArqRedis  # noqa: E402  — circular-safe; arq is a leaf dep
 from fastapi import Request  # noqa: E402
 
 
-def get_arq_pool(request: Request) -> ArqRedis:
+async def get_arq_pool(request: Request) -> ArqRedis:
     """FastAPI dependency — return the ARQ pool from ``app.state``.
 
-    Raises a 500-shaped ``RuntimeError`` if the pool wasn't initialised
-    (lifespan didn't run, or the worker is being driven outside the API).
+    Lazy-init: if lifespan didn't populate ``app.state.arq_pool`` (tests
+    via ASGITransport don't fire lifespan), create one on demand and
+    cache it on the same ``app.state``. Subsequent calls reuse it.
     """
     pool: ArqRedis | None = getattr(request.app.state, "arq_pool", None)
-    if pool is None:
-        raise RuntimeError(
-            "ARQ pool not initialised — lifespan startup did not run, "
-            "or get_arq_pool was called outside an HTTP request."
-        )
+    if pool is not None:
+        return pool
+
+    from arq import create_pool
+    from arq.connections import RedisSettings
+
+    pool = await create_pool(RedisSettings.from_dsn(str(get_settings().redis_dsn)))
+    request.app.state.arq_pool = pool
     return pool
 
 

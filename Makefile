@@ -26,6 +26,12 @@ worker-once:  ## Force-run a single scheduled job by name. Usage: make worker-on
 	@if [ -z "$(JOB)" ]; then echo "Usage: make worker-once JOB=<name>"; exit 1; fi
 	uv run python -m app.workers.run_once $(JOB)
 
+security-audit:  ## Audit dependencies for known CVEs (pip-audit).
+	uv run --with pip-audit pip-audit --skip-editable
+
+backup-local:  ## Run the backup script to a local /tmp file (smoke test).
+	bash bin/backup_db.sh /tmp/pharmacy-backup-$$(date -u +%Y%m%dT%H%M%SZ).sql.gz
+
 # ─── Quality ──────────────────────────────────────────────────────────────────
 lint:  ## ruff check + format check
 	uv run ruff check app tests

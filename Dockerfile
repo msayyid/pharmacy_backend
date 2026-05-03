@@ -36,9 +36,20 @@ RUN uv sync --frozen --no-dev
 # ─── Runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
+# Build-time arg → label → env. CI sets ``--build-arg GIT_SHA=$GITHUB_SHA``;
+# local builds default to "dev". The label feeds Sentry release tagging
+# and `docker inspect` for in-container provenance.
+ARG GIT_SHA=dev
+
+LABEL org.opencontainers.image.source="https://github.com/msayyid/pharmacy_backend" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.title="pharmacy-api" \
+      org.opencontainers.image.licenses="MIT"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:$PATH"
+    PATH="/app/.venv/bin:$PATH" \
+    GIT_SHA="${GIT_SHA}"
 
 WORKDIR /app
 

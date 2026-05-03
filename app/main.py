@@ -38,7 +38,12 @@ from app import __version__
 from app.api.admin_v1.router import router as admin_v1_router
 from app.api.errors import register_exception_handlers
 from app.api.health import router as health_router
-from app.api.middleware import AccessLogMiddleware, RequestIdMiddleware
+from app.api.middleware import (
+    AccessLogMiddleware,
+    MetricsMiddleware,
+    RequestIdMiddleware,
+    SecurityHeadersMiddleware,
+)
 from app.api.v1.router import router as v1_router
 from app.api.webhooks.freedom_pay import router as freedom_pay_webhook_router
 from app.core.config import get_settings
@@ -70,12 +75,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     # Sentry — dsn=None makes init a no-op (per Sentry SDK contract).
     dsn = settings.sentry_dsn.get_secret_value() if settings.sentry_dsn else None
+    # Release tag = ``pharmacy-api@<version>+<git_sha>``. CI sets
+    # ``GIT_SHA``; dev defaults to ``"dev"`` for grouping. Phase 12.
+    release = f"pharmacy-api@{__version__}+{settings.git_sha}"
     sentry_sdk.init(
         dsn=dsn,
-        release=f"pharmacy-api@{__version__}",
+        release=release,
         environment=settings.env,
-        traces_sample_rate=0.0,
-        profiles_sample_rate=0.0,
+        traces_sample_rate=0.1,
+        profiles_sample_rate=0.1,
         send_default_pii=False,
     )
     log.info("startup_complete", version=__version__, env=settings.env)
@@ -114,6 +122,8 @@ def create_app() -> FastAPI:
         )
     app.add_middleware(GZipMiddleware, minimum_size=1000)
     app.add_middleware(AccessLogMiddleware)
+    app.add_middleware(MetricsMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
     # Outermost — every log line gets a request_id:
     app.add_middleware(RequestIdMiddleware)
 

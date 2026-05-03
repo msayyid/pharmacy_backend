@@ -87,6 +87,8 @@ class Settings(BaseSettings):
     image_max_bytes: int = 10 * 1024 * 1024  # 10 MB per F-ADM-CAT-002
 
     sentry_dsn: SecretStr | None = None
+    git_sha: str = "dev"  # Sentry release tag; CI sets this from $GITHUB_SHA.
+    metrics_token: SecretStr | None = None  # /metrics bearer-token guard.
 
     # ─── CORS ─────────────────────────────────────────────────────────────────
     cors_origins: Annotated[list[AnyHttpUrl], NoDecode] = Field(default_factory=list)

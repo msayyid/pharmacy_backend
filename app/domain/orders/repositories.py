@@ -157,8 +157,15 @@ class OrderRepository:
     ) -> tuple[Sequence[Order], int]:
         base = select(Order).where(Order.user_id == user_id)
         total_stmt = select(func.count()).select_from(base.subquery())
+        # Eager-load items + history so route handlers that touch them
+        # don't fire N+1 (Phase 12 N+1 sweep). The relationships are
+        # ``lazy="raise"`` on the model — accessing without eager-load
+        # would raise loudly anyway, but pre-loading is what users want.
         items_stmt = (
-            base.order_by(Order.created_at.desc(), Order.id.desc()).offset(offset).limit(limit)
+            base.options(selectinload(Order.items), selectinload(Order.history))
+            .order_by(Order.created_at.desc(), Order.id.desc())
+            .offset(offset)
+            .limit(limit)
         )
         total = (await self.session.execute(total_stmt)).scalar_one()
         items = (await self.session.execute(items_stmt)).scalars().all()

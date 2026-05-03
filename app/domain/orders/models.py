@@ -281,6 +281,8 @@ class Order(Base, TimestampMixin):
         Index("idx_orders_branch_status", "branch_id", "status"),
         Index("idx_orders_placed", "placed_at"),
         Index("idx_orders_status_payment", "status", "payment_status"),
+        # Phase 12 — admin queue + support lookup by phone (PRODUCT §18.2).
+        Index("idx_orders_recipient_phone", "recipient_phone"),
         {
             "mysql_engine": "InnoDB",
             "mysql_charset": "utf8mb4",
@@ -465,6 +467,9 @@ class Payment(Base):
         Index("idx_payments_order_created", "order_id", "created_at"),
         Index("idx_payments_status", "status"),
         Index("idx_payments_refund", "is_refund", "status"),
+        # Phase 12 — payment_reconcile worker looks up by provider txn id;
+        # without this index it's a full table scan on every cron tick.
+        Index("idx_payments_provider_txn", "provider", "provider_transaction_id"),
         {
             "mysql_engine": "InnoDB",
             "mysql_charset": "utf8mb4",
