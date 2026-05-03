@@ -900,3 +900,63 @@ Symptoms: substitutes excluded the source product's id but matched it (wrong-dir
 **Trade-offs:** Net-revenue reporting hides COD refunds (no explicit refund-amount line until we add one). The report doesn't break down per-product refunds either; Phase 11+ refund-analytics will if needed.
 **Reversibility:** Easy — change one CASE WHEN clause.
 **References:** `app/domain/reports/services.py:_sales_summary`, `:_top_products`; `tests/unit/test_reports_service.py`; PRODUCT §13 (reports).
+
+---
+
+### 2026-05-03 — Real adapters ship as scaffold-only; vendor-verified bodies blocked on docs
+**Phase:** 10
+**Context:** Phase 10's research sub-agents (Nikita SMS, Freedom Pay, Cloudflare R2) couldn't reach the network — both `WebSearch` and `WebFetch` were denied in the sandbox. Building real adapters from training-era memory would violate CLAUDE.md's "Library behaviour different from training data → web search" rule and risk silent-fail bugs (especially Freedom Pay's signature algorithm, which the agent rightly flagged as the make-or-break detail: a wrong field-order returns HTTP 200 but never settles a payment).
+**Decision:** Adopt path C from the surfaced options. Each real adapter — `NikitaSmsClient`, `FreedomPayClient`, `R2StorageClient` — ships with the **structural plumbing** (Protocol conformance, factory wiring, httpx / boto3 client construction, tenacity retry decorator, settings validation) but its I/O methods raise `NotImplementedError` referencing the matching `OPEN_QUESTIONS` entry (Q13/Q14/Q15). The Fake clients carry every test. Phase 12 (production readiness) is blocked on vendor-doc verification; Phase 11 (worker registration) and any feature work are NOT blocked because the architecture is fully exercised through the fakes.
+**Alternatives considered:** A — wait for the user to grant web access. B — wait for vendor PDFs in the repo. Both push Phase 10 indefinitely. D — implement adapters from memory and ship "best guess" code. Rejected: silent-fail blast radius is too high for the payment signature path.
+**Rationale:** Honest scaffold > confident fabrication. The factories, DI graph, webhook route, schema, and lifecycle hooks are all real and fully tested through the Fake clients. When vendor docs arrive, swap one method body per adapter and close the OPEN_QUESTIONS entry; nothing else needs to change.
+**Trade-offs:** The scaffolds are maintenance overhead until verified. Users can't accidentally ship a half-working real client — `make test` won't catch a misconfiguration since it uses fakes; a developer flipping `sms_provider="nikita"` without reading OPEN_QUESTIONS gets a 500 from `NotImplementedError`, which is loud but late.
+**Reversibility:** Trivial — replace each `NotImplementedError` with the verified body.
+**References:** `app/integrations/{sms,payments,storage}/{nikita,freedom_pay,r2}.py`; `OPEN_QUESTIONS.md` Q13/Q14/Q15.
+
+---
+
+### 2026-05-03 — SMS abstraction split: SmsQueue (services enqueue) + SmsClient (worker sends)
+**Phase:** 10
+**Context:** Phase 4 shipped `SmsQueue.enqueue(SmsMessage)` as the only SMS abstraction; services called it directly and the FakeSmsQueue both recorded and "delivered" in one shot. Phase 10 needs to add a real provider (Nikita) called from a worker. Two designs: (a) one `SmsClient.send` Protocol that services and the worker both use, with services synchronously calling `client.send` (blocks the request on a third-party HTTP call); (b) two layers — `SmsQueue` is what services touch (records the intent), `SmsClient` is what the worker calls (does the actual send).
+**Decision:** (b). `SmsQueue.enqueue(message)` is the services-facing API — synchronous DB write to `sms_log` (status='queued') + Phase 11 will turn this into an ARQ enqueue. `SmsClient.send(phone, body) → SendResult` is the worker-facing API — the Phase 10 worker function `app/workers/sms.py:send_sms` opens a session, calls the client, and reconciles the sms_log row. Two Protocols, two factory entry points (`get_sms_queue`, `get_sms_client`).
+**Alternatives considered:** Single `SmsClient`. Rejected: synchronous third-party call from the request thread blocks under provider latency or outage; the existing Phase 4 `SmsQueue` API would have to change.
+**Rationale:** The two abstractions model two different operations (intent to send vs actual delivery). Services don't care how the SMS is delivered; the worker is the only place that does. The split also makes it easy to test — assert `FakeSmsQueue.sent` for "did we ask?" and `FakeSmsClient.calls` for "did we attempt delivery?".
+**Trade-offs:** Two layers to plumb instead of one. The worker registration is Phase 11; Phase 10's `FakeSmsQueue` writes the sms_log row directly so the test assertions work without ARQ.
+**Reversibility:** Easy — collapse to a single Protocol if the workflow simplifies.
+**References:** `app/integrations/sms/base.py` (SmsQueue + SmsClient); `app/integrations/sms/factory.py`; `app/workers/sms.py`; BACKEND §17.3.
+
+---
+
+### 2026-05-03 — Deliveries table added; courier columns on `orders` retained as a denormalised cache
+**Phase:** 10
+**Context:** Phase 9 added `courier_name` / `courier_phone` columns to `orders` and explicitly deferred a `deliveries` table (DECISION_LOG'd: "graduating to a deliveries table later is a routine migration"). Phase 10's prompt and PHARMACY §7.7 call for the `deliveries` table now to carry the richer per-handover fields the inline columns can't hold (assignment / pick-up / drop-off timestamps, tracking number, actual fee).
+**Decision:** Add the `deliveries` table per PHARMACY §7.7 — `UNIQUE(order_id)`, FK ON DELETE CASCADE. **Keep** the inline `orders.courier_name` / `orders.courier_phone` columns as a denormalised cache: the order-detail read needs no join for the common case, and the lifecycle hook `_record_courier` writes both targets in the same transaction. The `deliveries` row is the canonical handover record; the inline columns mirror it.
+**Alternatives considered:** Drop the inline columns and require the join everywhere. Rejected — order detail is the highest-traffic admin read; an extra join per request for a field that almost always equals the deliveries-row value is waste. Inverse: skip the table, keep inline only. Rejected — assignment / pickup / drop-off timestamps don't fit on Order without bloating that table further.
+**Rationale:** Denormalisation is cheap when the source of truth is one row away and writes are co-located. We pay one extra row write per dispatch (already in the transaction); we save one join per order-detail read forever.
+**Trade-offs:** Dual write means dual maintenance — if the courier changes mid-delivery (Phase 2 feature), both targets must be updated. The lifecycle hook owns this discipline.
+**Reversibility:** Drop the inline columns when `deliveries` becomes the only consumer (Phase 12+).
+**References:** `app/domain/deliveries/models.py`; `app/domain/orders/lifecycle.py:_create_delivery_row`; PHARMACY §7.7.
+
+---
+
+### 2026-05-03 — Webhook idempotency via Redis SETNX dedupe (not a DB unique constraint)
+**Phase:** 10
+**Context:** Payment gateways retry webhooks aggressively on non-2xx — duplicate deliveries are normal. Each event must be idempotent: the second delivery of the same `event_id` should be a no-op rather than a double charge / double refund. Two implementations: (a) DB unique constraint on `(provider, event_id)` in a new `webhook_events` table — every webhook insert tries the row, conflict means duplicate; (b) Redis `SETNX v1:webhook:<provider>:<event_id> EX 86400` — first-write-wins, TTL covers gateway retry windows.
+**Decision:** (b). The `PaymentService.handle_webhook` accepts an injected `WebhookDedupeCheck` callable. The route wires a Redis-backed implementation (SETNX with 24h TTL); unit/integration tests can pass `None` (always-first-time) or a stub. No new table.
+**Alternatives considered:** (a) DB constraint — adds a hot-write contention point on a table that doesn't carry useful data otherwise; the row would just be a dedupe sentinel. (c) Application-level lock or queue — more complexity than the problem warrants for a low-volume MVP webhook stream.
+**Rationale:** Webhook events are sparse (one per state change per order) and ephemeral (no value past the dedupe window). Redis is already the rate-limit + cache + idempotency-key store; a 24h TTL key is operationally cheap and matches the gateway's retry envelope. If Redis is down the dedupe degrades to "always first-seen" — the worst outcome is a double-apply, which the payment-status flips already make idempotent at the row level (paid stays paid).
+**Trade-offs:** Reliance on Redis availability. A multi-day Redis outage could allow a double-apply if the gateway also retried over that window — acceptable risk for MVP, hardened in Phase 12 with a fallback DB constraint if needed.
+**Reversibility:** Add the DB table later as a belt-and-braces if Redis SETNX proves insufficient.
+**References:** `app/domain/payments/services.py:handle_webhook`; `app/api/webhooks/freedom_pay.py:_redis_setnx_dedupe_factory`; `tests/integration/test_payment_webhook.py::test_idempotent_replay_returns_duplicate`.
+
+---
+
+### 2026-05-03 — Storage public-vs-presigned split: catalog images public, admin exports private
+**Phase:** 10
+**Context:** R2 supports both public buckets (URL is permanent, served via CDN custom domain) and presigned URLs (time-limited GET URLs for private objects). Catalog product images are public — every storefront browser fetches them, every CDN hit is free. Admin exports (Phase 12 feature: low-stock CSVs, near-expiry reports as XLSX) are private — generated on demand, returned to one admin, must not be guessable.
+**Decision:** Phase 10 ships only the public path: `StorageClient.upload(key, data, content_type) → public_url`. The `FakeStorageClient` returns a `file://` URL; the (scaffold) `R2StorageClient` will return a CDN URL (`{storage_public_base_url}/{key}`) once vendor-verified. `sign_url(key, ttl_seconds) → presigned_url` is on the Protocol but the `FakeStorageClient` returns a deterministic marker URL; admin-export use-cases land in Phase 12.
+**Alternatives considered:** Always presign — overhead per request + URL rotation breaks browser caching. Always public — leaks admin export URLs.
+**Rationale:** Catalog images are the 99% case in MVP and they're public by design. Adding the presigned path now without a real consumer is YAGNI; the Protocol slot keeps the seam open for Phase 12.
+**Trade-offs:** The `FakeStorageClient.sign_url` returns a non-cryptographic marker — anyone reading the test code knows it's not real. Phase 12 must implement signing in `R2StorageClient.sign_url` AND add a real test that verifies the presigned URL parses + has the correct expiry.
+**Reversibility:** Trivial — flip one boolean per upload call.
+**References:** `app/integrations/storage/base.py`; `app/integrations/storage/fake.py`; `app/integrations/storage/r2.py`; BACKEND §19.

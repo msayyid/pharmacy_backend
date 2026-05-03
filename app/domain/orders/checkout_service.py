@@ -35,6 +35,7 @@ from app.core.errors import (
     NotFoundError,
     ValidationError,
 )
+from app.core.i18n import t as translate
 from app.core.types import uuid7
 from app.domain.catalog.repositories import ProductRepository
 from app.domain.identity.models import User, UserAddress
@@ -67,6 +68,8 @@ from app.domain.orders.schemas import (
     PriceConflict,
     StockConflict,
 )
+from app.integrations.payments.base import PaymentClient
+from app.integrations.sms.base import SmsMessage, SmsQueue
 
 # ─── Pricing helpers ─────────────────────────────────────────────────────────
 
@@ -131,6 +134,9 @@ class CheckoutService:
         batches: InventoryBatchRepository,
         addresses: UserAddressRepository,
         inventory: InventoryService,
+        sms_queue: SmsQueue | None = None,
+        payment_client: PaymentClient | None = None,
+        payment_return_url_template: str = "https://pharmacy.kg/orders/{order_number}",
     ) -> None:
         self.carts = carts
         self.orders = orders
@@ -141,6 +147,9 @@ class CheckoutService:
         self.batches = batches
         self.addresses = addresses
         self.inventory = inventory
+        self.sms_queue = sms_queue
+        self.payment_client = payment_client
+        self.payment_return_url_template = payment_return_url_template
 
     # ─── Quote ─────────────────────────────────────────────────────────────
 
@@ -396,13 +405,55 @@ class CheckoutService:
             changed_by_system=True,
         )
 
-        # 10) Card-payment scaffold (Phase 10 wires the real gateway).
+        # 10) Card-payment intent (Phase 10): call the gateway,
+        # persist a Payment row, return the redirect URL. Falls back
+        # to a stub URL if no payment_client is wired (older test
+        # fixtures); production deps always inject one.
         payment_redirect_url: str | None = None
         if payload.payment_method == PaymentMethod.CARD_ONLINE.value:
-            payment_redirect_url = f"https://payments.example.com/pay/{order.order_number}"
+            if self.payment_client is not None:
+                from app.domain.payments.services import PaymentService
+
+                intent = await self.payment_client.create_intent(
+                    order_id=str(order.id),
+                    order_number=order.order_number,
+                    amount=order.total,
+                    currency=order.currency,
+                    recipient_phone=order.recipient_phone,
+                    return_url=self.payment_return_url_template.format(
+                        order_number=order.order_number
+                    ),
+                )
+                payment_svc = PaymentService(session=self.orders.session)
+                await payment_svc.record_charge_initiated(
+                    order_id=order.id,
+                    provider=self.payment_client.provider,
+                    provider_transaction_id=intent.provider_transaction_id,
+                    amount=order.total,
+                    currency=order.currency,
+                    raw_response=intent.raw,
+                )
+                payment_redirect_url = intent.redirect_url
+            else:
+                payment_redirect_url = f"https://payments.example.com/pay/{order.order_number}"
 
         # 11) Clear cart items.
         await self.carts.clear_items(cart.id)
+
+        # 11a) Customer-facing SMS (PRODUCT §14.2 — order_placed).
+        if self.sms_queue is not None and order.recipient_phone:
+            body = translate(
+                "sms.order_placed",
+                "ru",  # MVP: SMS in RU; Phase 12 reads user.preferred_language.
+                order_no=order.order_number,
+            )
+            await self.sms_queue.enqueue(
+                SmsMessage(
+                    phone=order.recipient_phone,
+                    body=body,
+                    purpose="order_placed",
+                )
+            )
 
         # Build response.
         response = PlaceOrderResponse(

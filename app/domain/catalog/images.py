@@ -2,17 +2,19 @@
 
 Phase 5 ships the synchronous-fallback path: open with Pillow, generate
 WebP variants (thumbnail 200, medium 600, large 1200, plus original
-capped at 2400 px), save to local disk, persist a ``ProductImage`` row.
+capped at 2400 px), persist a ``ProductImage`` row.
 
-Phase 11 will replace the inline resize with an ARQ worker that calls
-the same :func:`process_image` helper. R2 upload arrives in Phase 10.
+Phase 10 swaps the disk-write path for an injected
+:class:`StorageClient` (R2 in prod, fake-on-disk in dev/test). Phase
+11 will replace the inline resize with an ARQ worker that calls the
+same :func:`process_image` helper.
 
 The "one primary image per product" UNIQUE is enforced at the DB layer
 via the ``primary_product_id`` generated column (BACKEND §6.5). When
 flipping ``is_primary=True`` on a non-primary image we clear other
 primaries for the same product first to satisfy the constraint.
 
-Reference: PRODUCT §13.3, BACKEND §10, CLAUDE_CODE_PROMPTS Phase 5.
+Reference: PRODUCT §13.3, BACKEND §10, CLAUDE_CODE_PROMPTS Phase 5/10.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from app.domain.catalog.repositories import ProductRepository
 from app.domain.catalog.schemas import ProductImageUpdate
 from app.domain.identity.models import AdminUser
 from app.domain.ops.services import AdminAuditLogService
+from app.integrations.storage.base import StorageClient
 
 ALLOWED_IMAGE_MIMES: frozenset[str] = frozenset(
     {"image/jpeg", "image/jpg", "image/png", "image/webp"}
@@ -107,12 +110,14 @@ class ProductImageService:
         storage_dir: Path,
         public_base_url: str,
         max_bytes: int,
+        storage: StorageClient | None = None,
     ) -> None:
         self.products = products
         self.audit = audit
         self.storage_dir = storage_dir
         self.public_base_url = public_base_url.rstrip("/")
         self.max_bytes = max_bytes
+        self.storage = storage
 
     async def _get_image_for_product(self, product_id: UUID, image_id: int) -> ProductImage | None:
         stmt = select(ProductImage).where(
@@ -149,17 +154,30 @@ class ProductImageService:
 
         # ─── Save ───────────────────────────────────────────────────────────
         storage_key = secrets.token_hex(8)
-        base_dir = self.storage_dir / "products" / str(product_id) / storage_key
-        base_dir.mkdir(parents=True, exist_ok=True)
-
         urls: dict[str, str] = {}
-        for variant_name, data in variants.items():
-            path = base_dir / f"{variant_name}.webp"
-            path.write_bytes(data)
-            urls[variant_name] = (
-                f"{self.public_base_url}/products/{product_id}/{storage_key}/"
-                f"{variant_name}.webp"
-            )
+        if self.storage is not None:
+            # Phase 10 path: hand bytes to the StorageClient (R2 in
+            # prod, fake-on-disk in dev/test). The client's return URL
+            # is what we persist; ``public_base_url`` is unused.
+            for variant_name, data in variants.items():
+                key = f"products/{product_id}/{storage_key}/{variant_name}.webp"
+                urls[variant_name] = await self.storage.upload(
+                    key=key,
+                    data=data,
+                    content_type="image/webp",
+                )
+        else:
+            # Phase 5 fallback (still here so existing tests that
+            # don't pass a storage client keep working).
+            base_dir = self.storage_dir / "products" / str(product_id) / storage_key
+            base_dir.mkdir(parents=True, exist_ok=True)
+            for variant_name, data in variants.items():
+                path = base_dir / f"{variant_name}.webp"
+                path.write_bytes(data)
+                urls[variant_name] = (
+                    f"{self.public_base_url}/products/{product_id}/{storage_key}/"
+                    f"{variant_name}.webp"
+                )
 
         record = ProductImage(
             product_id=product_id,

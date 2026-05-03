@@ -126,6 +126,36 @@
 
 ---
 
+## Q13 — Nikita SMS contract: auth, endpoint, request envelope, status codes
+
+- **Where it surfaced:** Phase 10. The Phase 10 research sub-agent (Nikita SMS) ran without web access and returned a memory-based reconstruction labelled "ASSUMED, must verify with vendor". The reconstruction suggests Nikita SMSPRO uses XML over `POST https://smspro.nikita.kg/api/message` with per-request `<login>` + `<pwd>` body credentials (not a header API key), `<phone>` in bare-MSISDN format `996XXXXXXXXX`, status code `11=accepted`, with `<test>1</test>` for sandbox dry-run. None of this is verified against current docs.
+- **Why it matters:** The current `Settings.sms_api_key` field is the wrong shape if the reconstruction is correct (would need `sms_login` + `sms_password`). Wrong endpoint/status mapping causes silent under-delivery; wrong sender ID falls back to a generic short-code that erodes brand trust.
+- **Proposed default:** Phase 10 ships `NikitaSmsClient` as scaffold-only — every call raises `NotImplementedError("OPEN_QUESTIONS Q13")`. Configured default is `sms_provider=fake`. Production deploy is blocked until: (a) email `info@nikita.kg` for current API PDF + sandbox creds + sender-ID registration; (b) reshape `Settings` if needed; (c) implement the real adapter with httpx + tenacity (retry only on 5xx / network); (d) add a unit test against captured request fixtures (`respx`); (e) close this question.
+- **Decider:** Backend tech lead + ops (sender-ID registration is contractual).
+- **Blocks:** Phase 12 (production readiness). Does NOT block Phase 11 (worker registration).
+
+---
+
+## Q14 — Freedom Pay (KG) contract: signature algorithm, amount unit, webhook shape
+
+- **Where it surfaced:** Phase 10. The Freedom Pay research sub-agent ran without web access and refused to write a memory-based report (signature algorithm flagged as the make-or-break detail; getting the field-ordering rule wrong returns HTTP 200 but never settles a payment).
+- **Why it matters:** The signature algorithm (md5 vs hmac-sha256, alphabetical vs declared-order field concatenation, where the sig field lives) is silent-fail-prone. The amount unit (KGS decimal `100.50` vs kopecks-as-integer `10050`) determines whether we under- or over-charge by 100×. The webhook event-id field name determines whether our Redis SETNX dedupe works.
+- **Proposed default:** Phase 10 ships `FreedomPayClient` as scaffold-only — `create_intent`, `refund`, `verify_webhook`, `_sign` all raise `NotImplementedError("OPEN_QUESTIONS Q14")`. Configured default is `payment_provider=fake`. Production deploy is blocked until: (a) obtain current Freedom Pay (KG) developer docs (PDF / Postman collection from `developer.freedompay.kg` or via the merchant onboarding contact); (b) capture a known-input signature fixture from the docs as a unit-test vector; (c) implement adapter with httpx + tenacity; (d) verify webhook event-id field name + close the dedupe question; (e) close this question.
+- **Decider:** Backend tech lead + finance (refund flow + reconciliation).
+- **Blocks:** Phase 12 (production readiness). Does NOT block Phase 11 (worker registration). Does NOT block customer order placement (COD works end-to-end with no gateway involvement).
+
+---
+
+## Q15 — Cloudflare R2 + boto3: region naming, ACL behaviour, presigned-URL TTL ceiling
+
+- **Where it surfaced:** Phase 10. The R2 research sub-agent ran without web access. boto3 ↔ R2 has historically had non-obvious quirks (`region_name="auto"` requirement, ACL semantics differing from S3, presigned-URL TTL ceiling at 7 days vs S3's 7 days vs Cloudflare-imposed shorter limits, multipart-upload threshold).
+- **Why it matters:** Wrong client kwargs throw obscure `botocore` errors at the first upload. Wrong public-bucket pattern means the storefront fetches 404 instead of an image. Wrong presigned-URL TTL ceiling means signed admin export URLs silently fail past a threshold.
+- **Proposed default:** Phase 10 ships `R2StorageClient` as scaffold-only — `upload`, `delete`, `sign_url` all raise `NotImplementedError("OPEN_QUESTIONS Q15")`. Configured default is `FakeStorageClient` whenever `storage_endpoint` is unset (so dev runs without real R2 creds). Production deploy is blocked until: (a) confirm boto3 client kwargs against `developers.cloudflare.com/r2/examples/aws/boto3/`; (b) confirm public-bucket URL pattern (`pub-<hash>.r2.dev` vs custom domain); (c) confirm presigned-URL TTL ceiling; (d) implement the three methods with `asyncio.to_thread` wrappers around the sync boto3 calls; (e) close this question.
+- **Decider:** Backend tech lead + ops (R2 account + custom domain DNS).
+- **Blocks:** Phase 12 (production image serving). Does NOT block Phase 11. Does NOT block dev / unit tests (FakeStorageClient covers them).
+
+---
+
 ## Resolved questions
 
 ### Q6 — `python-jose` vs PyJWT *(resolved 2026-05-02 in Phase 4)*

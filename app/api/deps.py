@@ -37,6 +37,7 @@ from app.domain.catalog.repositories import (
 from app.domain.catalog.search import SearchService
 from app.domain.catalog.services import CatalogAdminService
 from app.domain.catalog.storefront import StorefrontCatalogService
+from app.domain.deliveries.repositories import DeliveryRepository
 from app.domain.identity.models import User
 from app.domain.identity.repositories import (
     AdminSessionRepository,
@@ -74,8 +75,13 @@ from app.domain.orders.repositories import (
     OrderSequenceRepository,
     OrderStatusHistoryRepository,
 )
+from app.domain.payments.services import PaymentService
 from app.domain.reports.services import ReportService
+from app.integrations.payments.base import PaymentClient
+from app.integrations.payments.factory import get_payment_client as _get_payment_client_factory
 from app.integrations.sms.base import get_sms_queue
+from app.integrations.storage.base import StorageClient
+from app.integrations.storage.factory import get_storage_client as _get_storage_client_factory
 
 # ─── Type aliases ─────────────────────────────────────────────────────────────
 
@@ -276,10 +282,16 @@ def get_product_service(
     )
 
 
+def get_storage_client() -> StorageClient:
+    """FastAPI dependency wrapping the module-level storage client."""
+    return _get_storage_client_factory()
+
+
 def get_product_image_service(
     settings: SettingsDep,
     products: Annotated[ProductRepository, Depends(get_product_repository)],
     audit: Annotated[AdminAuditLogService, Depends(get_admin_audit_service)],
+    storage: Annotated[StorageClient, Depends(get_storage_client)],
 ) -> ProductImageService:
     return ProductImageService(
         products=products,
@@ -287,6 +299,7 @@ def get_product_image_service(
         storage_dir=Path(settings.image_storage_dir),
         public_base_url=settings.image_public_base_url,
         max_bytes=settings.image_max_bytes,
+        storage=storage,
     )
 
 
@@ -414,6 +427,8 @@ def get_checkout_service(
         batches=batches,
         addresses=addresses,
         inventory=inventory,
+        sms_queue=get_sms_queue(),
+        payment_client=_get_payment_client_factory(),
     )
 
 
@@ -471,6 +486,10 @@ CartOwner = Annotated[tuple[User | None, str | None], Depends(get_cart_owner)]
 # ─── Phase 9 — Admin order lifecycle + reports ──────────────────────────────
 
 
+def get_delivery_repository(session: DbSession) -> DeliveryRepository:
+    return DeliveryRepository(session)
+
+
 def get_order_lifecycle_service(
     session: DbSession,
     orders: Annotated[OrderRepository, Depends(get_order_repository)],
@@ -480,6 +499,7 @@ def get_order_lifecycle_service(
     movements: Annotated[StockMovementRepository, Depends(get_stock_movement_repository)],
     inventory: Annotated[InventoryService, Depends(get_inventory_service)],
     audit: Annotated[AdminAuditLogService, Depends(get_admin_audit_service)],
+    deliveries: Annotated[DeliveryRepository, Depends(get_delivery_repository)],
 ) -> OrderLifecycleService:
     return OrderLifecycleService(
         session=session,
@@ -490,8 +510,23 @@ def get_order_lifecycle_service(
         movements=movements,
         inventory=inventory,
         audit=audit,
+        sms_queue=get_sms_queue(),
+        deliveries=deliveries,
+        payment_client=_get_payment_client_factory(),
     )
 
 
 def get_report_service(session: DbSession) -> ReportService:
     return ReportService(session=session)
+
+
+# ─── Phase 10 — Payment client + service ────────────────────────────────────
+
+
+def get_payment_client() -> PaymentClient:
+    """FastAPI dependency wrapping the module-level payment client."""
+    return _get_payment_client_factory()
+
+
+def get_payment_service(session: DbSession) -> PaymentService:
+    return PaymentService(session=session)

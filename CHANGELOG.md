@@ -13,6 +13,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project initialised; specs and master plan in place.
 - `BUILD_PLAN.md`, `BUILD_PROGRESS.md`, `OPEN_QUESTIONS.md` (12 substantive items), `RISKS.md` (top-10 ranked + watching list), `DECISION_LOG.md` template, this file.
 
+#### Phase 10 — Integrations: SMS, Payments, Storage (2026-05-03) — complete (scaffold-only real adapters)
+
+**Pre-work:** the three research sub-agents (Nikita / Freedom Pay / R2) ran with `WebSearch` and `WebFetch` denied. Rather than ship adapters built from training-era memory (especially the silent-fail-prone Freedom Pay signature), real adapters are scaffolded with `NotImplementedError` bodies pending vendor-doc verification. `OPEN_QUESTIONS.md` Q13/Q14/Q15 block Phase 12 (production readiness) on this.
+
+- **2 new tables** + migration `ac097ed3c5aa`:
+    - `sms_log` (PHARMACY §8.2) — one row per SMS attempt; `(phone, purpose, body, provider, provider_message_id, status, cost, error, sent_at)`. Indexed on `(phone, created_at)`, `(status, created_at)`, `(purpose, created_at)`.
+    - `deliveries` (PHARMACY §7.7) — per-order handover record; `UNIQUE(order_id)`. Holds courier name/phone, tracking number, assignment / pickup / delivery timestamps, actual delivery fee. Phase 9's inline `courier_name` / `courier_phone` columns on `orders` are retained as a denormalised cache (DECISION_LOG'd).
+- **Repositories** in new `app/domain/deliveries/` (Delivery + repo with `create_for_order`, `get_for_order`, `mark_picked_up`, `mark_delivered`) and `app/domain/ops/repositories.py` (`SmsLogRepository.create_queued / mark_sent / mark_failed / list_recent`).
+- **SMS layer** (`app/integrations/sms/`):
+    - `base.py` — extended with `SmsClient` Protocol (`send(phone, body) → SendResult`) + `SendResult` dataclass alongside the existing `SmsQueue`. Two layers: services enqueue, worker sends (DECISION_LOG'd).
+    - `nikita.py` — `NikitaSmsClient` scaffold; `send` raises `NotImplementedError("OPEN_QUESTIONS Q13")`. The httpx `AsyncClient` + tenacity retry wrapper are wired so the eventual implementation inherits jittered backoff.
+    - `fake.py` — extended `FakeSmsQueue` with optional `session_factory` that writes one `sms_log` row per enqueue (best-effort suppress on failure). Added `FakeSmsClient` (records calls in `.calls`; returns deterministic `SendResult`).
+    - `factory.py` — `get_sms_client()` provider switch with module-level cache + `set_sms_client()` for tests.
+- **Payment layer** (`app/integrations/payments/`):
+    - `base.py` — `PaymentClient` Protocol with `create_intent` / `refund` / `verify_webhook`; value types `CreateIntentResult`, `RefundResult`, `ParsedEvent`, `EventType` literal, `InvalidSignatureError(AppError, status=400)`.
+    - `freedom_pay.py` — `FreedomPayClient` scaffold; every method raises `NotImplementedError("OPEN_QUESTIONS Q14")`. Boto3-style construction wired (httpx + tenacity).
+    - `fake.py` — `FakePaymentClient` with HMAC-SHA256 webhook signing (configurable token), deterministic `provider_transaction_id` derivation, `make_event_payload` + `sign` test helpers, `verify_webhook` that rejects bad sigs via `InvalidSignatureError`.
+    - `factory.py` — `get_payment_client()` provider switch.
+- **Storage layer** (`app/integrations/storage/`):
+    - `base.py` — `StorageClient` Protocol (`upload`, `delete`, `sign_url`).
+    - `r2.py` — `R2StorageClient` scaffold; constructs the boto3 `s3` client with R2-shaped kwargs (`endpoint_url`, `region_name="auto"`, `signature_version="s3v4"`) but every I/O method raises `NotImplementedError("OPEN_QUESTIONS Q15")`.
+    - `fake.py` — `FakeStorageClient` writes to `<tempdir>/r2-fake/<key>`, returns `file://` URLs. Records every upload + delete.
+    - `factory.py` — `get_storage_client()` defaults to fake when `storage_endpoint` is unset (so dev/unit-tests don't need real R2 creds).
+- **Worker function** (`app/workers/sms.py`) — `send_sms(ctx, *, sms_log_id, phone, body, purpose)` per BACKEND §17.3: opens `session_scope`, calls the configured `SmsClient`, marks the `sms_log` row sent or failed. ARQ registration is deferred to Phase 11 alongside the rest of the worker.
+- **`PaymentService`** (`app/domain/payments/services.py`):
+    - `record_charge_initiated(order_id, provider, provider_transaction_id, amount, currency)` — inserts the pending Payment row from `CheckoutService.place_order` after `client.create_intent`.
+    - `record_refund_initiated(...)` — informational refund row writer.
+    - `handle_webhook(event, *, provider, dedupe_check)` — idempotent (Redis SETNX 24h via injected callable); finds Payment by `(provider, provider_transaction_id, is_refund)`, applies one of `charge_succeeded` / `charge_failed` / `refund_succeeded` / `refund_failed`, updates Order's `payment_status`. Returns `WebhookOutcome("applied" | "duplicate" | "no_match", payment_id)`.
+- **Webhook route** (`app/api/webhooks/freedom_pay.py`): `POST /api/webhooks/payments/freedom-pay` — reads raw body, calls `client.verify_webhook(body, signature)` (raises `InvalidSignatureError` → 400), delegates to `PaymentService.handle_webhook` with the Redis-backed dedupe closure. Wired into `app/main.py` under the `/api` prefix.
+- **CheckoutService.place_order** swap: stub `payment_redirect_url` for card orders replaced with a real `payment_client.create_intent(...)` call + `record_charge_initiated`. Falls back to the stub URL only when no `payment_client` is wired (legacy test fixtures).
+- **OrderLifecycleService.refund** swap: `_create_refund_payment_row` for card orders now finds the original successful charge (`SELECT … WHERE is_refund=False AND status='paid'`), calls `payment_client.refund(provider_transaction_id, amount, reason)`, and stores the returned `refund_id` as the new refund row's `provider_transaction_id`.
+- **OrderLifecycleService SMS hooks**: `SMS_TEMPLATE_FOR_STATUS` map drives a single `_maybe_enqueue_status_sms` call after every successful `dispatch()`. Customer-visible transitions (`confirmed` / `out_for_delivery` / `delivered` / `cancelled`) enqueue one SMS each; admin-internal (`preparing` / `ready_for_pickup`) emit nothing. SMS body is rendered via `i18n.t(template_key, "ru", **vars)` — KY/EN fall back to RU per Phase 3's i18n contract.
+- **Deliveries hook**: new `_create_delivery_row` registered on `(preparing → out_for_delivery)` (after `_record_courier`, before `_convert_reservation_to_sold`). Inserts one `deliveries` row with `provider="in_house"` default + `assigned_at=now`.
+- **CheckoutService.place_order SMS hook**: enqueues one `order_placed` SMS right after the cart is cleared, using `recipient_phone` + RU template.
+- **DI factories** (`app/api/deps.py`): `get_storage_client`, `get_payment_client`, `get_payment_service`, `get_delivery_repository`. `get_checkout_service` + `get_order_lifecycle_service` + `get_product_image_service` updated to inject the new dependencies.
+- **29 new tests (457 total)**:
+    - Unit (with fakes): `test_sms_factory.py` (8 — provider switch, FakeSmsClient records, NikitaSmsClient scaffold raises NotImplementedError, FakeSmsQueue writes sms_log row when session_factory wired), `test_payment_factory.py` (7 — provider switch, FakePaymentClient intent/refund/sign+verify, FreedomPay scaffold raises on all 3 methods), `test_storage_factory.py` (6 — provider switch, FakeStorageClient round-trip, R2 scaffold raises on all 3 methods).
+    - Integration: `test_payment_webhook.py` (5 — invalid signature 400, charge_succeeded flips Payment + Order, refund_succeeded flips both, idempotent replay, no_match for unknown txn). `test_lifecycle_sms.py` (3 — order_placed enqueued from CheckoutService; full lifecycle emits 3 SMS via the dispatcher with correct purposes + courier var interpolation; deliveries row created at dispatch; cancel-from-pending emits cancelled SMS with reason).
+    - E2E: `test_card_payment_flow.py` (1 — guest cart → OTP login → place card_online order → POST signed webhook → assert order is `payment_status=paid` + Payment row paid + paid_at set).
+    - **Real-adapter sandbox tests deliberately not shipped** — without vendor-verified contracts, `pytest.mark.skipif(no_creds)` would just be permanent skips. Phase 12 adds them after vendor verification.
+- **3 new OPEN_QUESTIONS** (Q13 Nikita SMS contract, Q14 Freedom Pay signature, Q15 R2 + boto3 quirks) — block Phase 12 launch readiness; do NOT block Phase 11 worker registration.
+- 457 tests pass; mypy --strict + ruff clean across 114 source files.
+
 #### Phase 9 — Admin Order Lifecycle, Reports & Audit (2026-05-03) — complete
 
 - **`Payment` model** in `app/domain/orders/models.py` — UUID PK, `order_id` FK (CASCADE), `provider`, `amount > 0` (CHECK), `currency` (KGS), `status` (`pending|succeeded|failed|refunded`), `is_refund` boolean (DECISION_LOG'd — separates charge rows from refund rows), `external_id`, `raw_request` / `raw_response` (JSON), `paid_at`. Indexed on `(order_id, created_at desc)` for refund-history queries.

@@ -1,23 +1,27 @@
-"""Operations domain — admin audit log + search log repositories.
+"""Operations domain — admin audit log + search log + sms log repositories.
 
 * Phase 5 — audit log writer.
 * Phase 7 — search log writer + popular-searches read.
 * Phase 9 — admin viewer endpoints (read side).
+* Phase 10 — SMS log: ``create_queued`` from the enqueue site, then
+  ``mark_sent`` / ``mark_failed`` from the worker after the provider
+  responds.
 
-Reference: PHARMACY_BLUEPRINT_2.md §8.1, §8.3.
+Reference: PHARMACY_BLUEPRINT_2.md §8.1, §8.2, §8.3.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.ops.models import AdminAuditLog, SearchLog
+from app.domain.ops.models import AdminAuditLog, SearchLog, SmsLog
 
 
 class AdminAuditLogRepository:
@@ -125,4 +129,75 @@ class SearchLogRepository:
             .order_by(SearchLog.created_at.desc())
             .limit(limit)
         )
+        return (await self.session.execute(stmt)).scalars().all()
+
+
+class SmsLogRepository:
+    """Append + status-update writer for ``sms_log`` (Phase 10)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create_queued(
+        self,
+        *,
+        phone: str,
+        body: str,
+        purpose: str,
+        provider: str | None = None,
+    ) -> SmsLog:
+        row = SmsLog(
+            phone=phone,
+            body=body,
+            purpose=purpose,
+            provider=provider,
+            status="queued",
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def mark_sent(
+        self,
+        sms_log_id: int,
+        *,
+        provider_message_id: str | None = None,
+        cost: Decimal | None = None,
+    ) -> None:
+        row = await self.session.get(SmsLog, sms_log_id)
+        if row is None:
+            return
+        row.status = "sent"
+        row.provider_message_id = provider_message_id
+        row.cost = cost
+        row.sent_at = datetime.now(tz=UTC).replace(tzinfo=None)
+        await self.session.flush()
+
+    async def mark_failed(self, sms_log_id: int, *, error: str) -> None:
+        row = await self.session.get(SmsLog, sms_log_id)
+        if row is None:
+            return
+        row.status = "failed"
+        row.error = error[:65000]  # TEXT cap; tenacity exception chains can balloon
+        await self.session.flush()
+
+    async def get(self, sms_log_id: int) -> SmsLog | None:
+        return await self.session.get(SmsLog, sms_log_id)
+
+    async def list_recent(
+        self,
+        *,
+        phone: str | None = None,
+        purpose: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> Sequence[SmsLog]:
+        stmt = select(SmsLog)
+        if phone is not None:
+            stmt = stmt.where(SmsLog.phone == phone)
+        if purpose is not None:
+            stmt = stmt.where(SmsLog.purpose == purpose)
+        if status is not None:
+            stmt = stmt.where(SmsLog.status == status)
+        stmt = stmt.order_by(SmsLog.created_at.desc()).limit(limit)
         return (await self.session.execute(stmt)).scalars().all()

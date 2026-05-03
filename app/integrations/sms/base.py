@@ -1,20 +1,30 @@
-"""SMS — message shape, queue protocol, factory.
+"""SMS — message shape, queue + client protocols, module-level singleton.
 
-Phase 4 ships only the :class:`FakeSmsQueue` (in-process, logs to structlog
-and stores enqueued messages for tests). Phase 11 will wire a real ARQ
-queue. Phase 10 lands the real Nikita SMS adapter that the worker invokes.
+The abstraction here is **two-layered** (DECISION_LOG'd in Phase 10):
 
-The abstraction here is the **queue**, not the **client**. Services don't
-send SMS directly — they enqueue. The worker pulls from the queue and
-calls the adapter.
+1. :class:`SmsQueue` — what services call. ``enqueue(message)`` records
+   the intent (writes the ``sms_log`` row, hands work to the worker).
+   This is the only thing services touch.
 
-Reference: BACKEND_BLUEPRINT.md §17, §10 (integrations layer); PRODUCT
-§14 (SMS strategy); CLAUDE_CODE_PROMPTS Phase 4 implementation guidance.
+2. :class:`SmsClient` — what the worker calls to actually deliver.
+   ``send(phone, body)`` returns a :class:`SendResult`. The fake client
+   pretends to send; the real client (Phase 12 readiness) talks to
+   Nikita SMSPRO.
+
+Phase 10 ships :class:`FakeSmsQueue` + :class:`FakeSmsClient` for tests
+and dev. The Nikita real client is scaffolded but raises
+``NotImplementedError`` pending vendor-doc verification — see
+``OPEN_QUESTIONS.md`` Q13. Phase 11 swaps :class:`FakeSmsQueue` for an
+ARQ-backed queue that enqueues a job; the worker function lives in
+:mod:`app.workers.sms`.
+
+Reference: BACKEND_BLUEPRINT.md §10, §17.3; PRODUCT §14, §21.3.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Protocol
 
 
@@ -27,10 +37,27 @@ class SmsMessage:
     purpose: str  # 'otp' | 'order_placed' | 'order_confirmed' | ...
 
 
+@dataclass(frozen=True, slots=True)
+class SendResult:
+    """Provider acknowledgement after a successful :meth:`SmsClient.send`."""
+
+    message_id: str | None
+    cost: Decimal | None = None
+    raw: dict[str, object] | None = None
+
+
 class SmsQueue(Protocol):
-    """Queue an SMS for asynchronous delivery."""
+    """Queue an SMS for asynchronous delivery (services-facing API)."""
 
     async def enqueue(self, message: SmsMessage) -> None: ...
+
+
+class SmsClient(Protocol):
+    """Send an SMS via the configured provider (worker-facing API)."""
+
+    provider: str
+
+    async def send(self, *, phone: str, body: str) -> SendResult: ...
 
 
 # ─── Module-level singleton ───────────────────────────────────────────────────

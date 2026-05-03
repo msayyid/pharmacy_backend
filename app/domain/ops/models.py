@@ -2,15 +2,16 @@
 
 * Phase 5 — :class:`AdminAuditLog`.
 * Phase 7 — :class:`SearchLog` (storefront search analytics).
-* Phase 10/11 — ``sms_log`` (lands with the Nikita integration).
+* Phase 10 — :class:`SmsLog` (lands alongside the SMS adapters).
 
-Reference: PHARMACY_BLUEPRINT_2.md §8.1, §8.3; PRODUCT_BLUEPRINT.md §8.7,
-§12.3.
+Reference: PHARMACY_BLUEPRINT_2.md §8.1, §8.2, §8.3; PRODUCT_BLUEPRINT.md
+§8.7, §12.3, §14.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -20,6 +21,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     func,
@@ -109,6 +111,46 @@ class SearchLog(Base):
         # zero-result report (filter by ``results_count = 0`` in the
         # query, then ORDER BY created_at DESC).
         Index("idx_sl_results_created", "results_count", "created_at"),
+        {
+            "mysql_engine": "InnoDB",
+            "mysql_charset": "utf8mb4",
+            "mysql_collate": "utf8mb4_0900_ai_ci",
+        },
+    )
+
+
+class SmsLog(Base):
+    """One row per SMS attempt (PHARMACY §8.2).
+
+    Written when an SMS is enqueued (``status='queued'``); flipped to
+    ``sent`` / ``failed`` by the worker after the provider responds.
+    Holds the rendered body verbatim so support can answer "what
+    exactly did the customer receive?" — phone is stored E.164; the
+    structlog redactor masks it on log emission, not at rest.
+    """
+
+    __tablename__ = "sms_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    phone: Mapped[str] = mapped_column(String(20), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(40), nullable=False)
+    body: Mapped[str | None] = mapped_column(Text)
+    provider: Mapped[str | None] = mapped_column(String(40))
+    provider_message_id: Mapped[str | None] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    cost: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    error: Mapped[str | None] = mapped_column(Text)
+    sent_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6),
+        nullable=False,
+        server_default=func.utc_timestamp(6),
+    )
+
+    __table_args__ = (
+        Index("idx_sms_phone_created", "phone", "created_at"),
+        Index("idx_sms_status_created", "status", "created_at"),
+        Index("idx_sms_purpose_created", "purpose", "created_at"),
         {
             "mysql_engine": "InnoDB",
             "mysql_charset": "utf8mb4",

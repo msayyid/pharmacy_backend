@@ -5,11 +5,11 @@
 
 ## Current state
 
-- **Active phase:** Phase 9 — Admin Order Lifecycle, Reports & Audit _(complete)_
-- **Status:** **complete** — 428 tests pass; mypy --strict + ruff clean across 98 source files.
+- **Active phase:** Phase 10 — Integrations: SMS, Payments, Storage _(complete — scaffold-only for the real adapters)_
+- **Status:** **complete** — 457 tests pass; mypy --strict + ruff clean across 114 source files.
 - **Last session:** 2026-05-03
-- **Sub-phases done:** 9.1 (Payments stub model + `courier_name` / `courier_phone` columns on Order + migration `d8499a5e7876` round-trips clean), 9.2 (`OrderLifecycleService` with `ALLOWED_TRANSITIONS` config-dict state machine + side-effect hooks: release / convert-to-sold / restock-cancelled-dispatch / record-courier / refund-payment-row; plus `InventoryService.restock_for_cancelled_dispatch` that walks each `sold` movement and pairs a `received` reversal in the original batch), 9.3 (admin schemas: `AdminOrderListItem`, `AdminOrderDetail`, `CancelByAdminRequest`, `DispatchRequest`, `RefundRequest`, `SwapBatchRequest`, `AuditLogEntry`; `ReportService` with 5-min TTL cache, sales summary excluding cancelled/refunded, top_products, CSV streaming with utf-8 BOM), 9.4 (3 admin route modules: `orders.py` — list+detail+confirm/start-preparing/mark-ready/dispatch/mark-delivered/cancel/refund(Idem-Key)/swap-batch; `reports.py` — sales + top-products with `format=json|csv`; `audit.py` — filtered viewer; DI factories for lifecycle + reports), 9.5 (32 new tests: 14 lifecycle unit + 4 reports unit + 5 audit-coverage integration + 5 lifecycle e2e + 4 reports e2e), 9.6 (hand-off + commit).
-- **Next session should:** start Phase 10 — Integrations: SMS, Payments, Storage. Re-read `BACKEND §22`, `PRODUCT §14` (SMS), `PRODUCT §11` (payments), `PHARMACY §7` for the deliveries/payments table that may graduate from the Order columns and Payment stub. Bring up real Nikita SMS adapter (sandbox), Freedom Pay scaffold + webhook, Cloudflare R2 storage adapter; behind a Protocol with fake/real factories per `app/integrations/<x>/{base,real,fake,factory}.py`.
+- **Sub-phases done:** 10.0 (research blocked — `WebSearch` / `WebFetch` denied; user picked path C: scaffold-only real adapters with `NotImplementedError` bodies + `OPEN_QUESTIONS` Q13/Q14/Q15 blocking Phase 12), 10.1 (`SmsLog` + `Delivery` models + repos + migration `ac097ed3c5aa` round-trips clean — Payment column polish was a no-op since Phase 9 already used `provider_transaction_id` + `failure_reason`), 10.2 (`SmsClient` Protocol next to existing `SmsQueue`; `NikitaSmsClient` scaffold; `FakeSmsClient` records calls + returns deterministic `SendResult`; `factory.get_sms_client()`; `app/workers/sms.py:send_sms` body shipped, ARQ registration deferred to Phase 11; `FakeSmsQueue` extended with optional `session_factory` so it writes one `sms_log` row per enqueue), 10.3 (lifecycle + checkout SMS hooks: `SMS_TEMPLATE_FOR_STATUS` map drives the post-`dispatch()` enqueue; `_create_delivery_row` hook on `(preparing→out_for_delivery)` inserts the `deliveries` row; CheckoutService.place_order enqueues `order_placed`), 10.4 (`PaymentClient` Protocol; `FreedomPayClient` scaffold raising NotImplementedError on every I/O; `FakePaymentClient` with HMAC-SHA256 webhook signing for tests; `payments/factory.py`; `PaymentService` with `record_charge_initiated`, `record_refund_initiated`, idempotent `handle_webhook` via Redis SETNX dedupe), 10.5 (`POST /api/webhooks/payments/freedom-pay` — signature-verified, idempotent; CheckoutService.place_order replaces stub `payment_redirect_url` with `payment_client.create_intent()` + persists pending Payment row; lifecycle.refund's `_create_refund_payment_row` hook now calls `payment_client.refund()` on card orders + stores returned `refund_id`), 10.6 (`StorageClient` Protocol; `R2StorageClient` boto3-built scaffold; `FakeStorageClient` writes to `<tmpdir>/r2-fake/`; `storage/factory.py` defaults to fake when `storage_endpoint` unset; `ProductImageService` swapped from inline disk-write to `storage.upload(...)`), 10.7 (29 new tests: 6 SMS-factory unit + 6 payment-factory unit + 6 storage-factory unit + 5 webhook integration + 3 lifecycle-SMS integration + 1 e2e card-payment-flow walkthrough; sandbox-gated real-adapter tests deliberately not shipped pending vendor verification), 10.8 (hand-off + commit).
+- **Next session should:** start Phase 11 — Background Jobs (ARQ) & Scheduled Tasks. Re-read `BACKEND §17` (ARQ pattern), `PHARMACY §18` (jobs catalogue), `PRODUCT §10.6` (reservation timeout), `PRODUCT §14.5` (SMS quiet hours). Wire the worker entrypoint, register `send_sms` (already shipped in `app/workers/sms.py`), build `process_image_upload`, `process_product_import`, `release_pending_orders`, `payment_reconcile`, `near_expiry_report`, `low_stock_report`, `expire_batches`, `reconcile_stock_cache`, `cleanup_otps`, `cleanup_carts`. ARQ cron schedules per BACKEND §17.2.
 
 ## Phases
 
@@ -23,7 +23,7 @@
 - [x] Phase 7 — Customer Discovery (Browse & Search) _(done 2026-05-02)_
 - [x] Phase 8 — Cart, Checkout & Place-Order (FEFO) _(done 2026-05-02)_
 - [x] Phase 9 — Admin Order Lifecycle, Reports & Audit _(done 2026-05-03)_
-- [ ] Phase 10 — Integrations: SMS, Payments, Storage
+- [x] Phase 10 — Integrations: SMS, Payments, Storage _(done 2026-05-03 — scaffold-only real adapters; production-readiness tracked in OPEN_QUESTIONS Q13/Q14/Q15)_
 - [ ] Phase 11 — Background Jobs & Scheduled Tasks
 - [ ] Phase 12 — Hardening & Launch Readiness
 
@@ -347,6 +347,92 @@ make lint && make type   # both clean
 ### After Phase 12
 
 Add: "smoke recipe runs against a fresh DB end-to-end" and the OWASP audit checklist signed off.
+
+### After Phase 10 (verified 2026-05-03)
+
+```bash
+make docker-up-test                                    # mysql-test :3307 + redis
+set -a && source .env.test && set +a
+uv run alembic upgrade head                            # 9 migrations now (+ sms_log + deliveries)
+
+# Seed catalog + inventory.
+uv run python -m dev.fixtures.catalog.seed
+uv run python -m dev.fixtures.inventory.seed
+
+uv run uvicorn app.main:app --port 8765 > /tmp/uvicorn.log 2>&1 &
+sleep 1
+
+# 1. Customer places a CARD-online order. Phase 10 actually persists
+#    a Payment row + returns the gateway redirect URL.
+curl -sc /tmp/cookies.txt http://localhost:8765/api/v1/cart > /dev/null
+SLUG=$(curl -s "http://localhost:8765/api/v1/categories/pain-relief/products" -H "Accept-Language: ru" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['items'][0]['slug'])")
+PID=$(curl -s "http://localhost:8765/api/v1/products/$SLUG" -H "Accept-Language: ru" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+curl -sb /tmp/cookies.txt -c /tmp/cookies.txt -X POST http://localhost:8765/api/v1/cart/items \
+  -H "Content-Type: application/json" -d "{\"product_id\":\"$PID\",\"quantity\":1}" > /dev/null
+
+PHONE="+996700123456"
+curl -s -X POST http://localhost:8765/api/v1/auth/otp/request -H "Content-Type: application/json" -d "{\"phone\":\"$PHONE\"}" > /dev/null
+CODE=$(grep "sms_enqueued" /tmp/uvicorn.log | tail -1 \
+  | python3 -c "import sys,json,re; d=json.loads(sys.stdin.read()); print(re.search(r'(\d{4,})', d['body']).group(1))")
+ACCESS=$(curl -s -X POST http://localhost:8765/api/v1/auth/otp/verify -H "Content-Type: application/json" \
+  -d "{\"phone\":\"$PHONE\",\"code\":\"$CODE\"}" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+ORDER_RESP=$(curl -s -X POST http://localhost:8765/api/v1/checkout/place \
+  -H "Authorization: Bearer $ACCESS" -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"delivery_method":"pickup","payment_method":"card_online","recipient_name":"Тест","recipient_phone":"+996700123456"}')
+echo "$ORDER_RESP" | python3 -m json.tool
+TXN=$(echo "$ORDER_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['payment_redirect_url'].rsplit('/',1)[-1])")
+ORDER_NO=$(echo "$ORDER_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['order_number'])")
+
+# 2. Simulate the gateway webhook (HMAC-SHA256 over the body using
+#    the FakePaymentClient's signing_token — only works in dev/test).
+#    Production with real Freedom Pay needs the vendor-verified
+#    signature algo (OPEN_QUESTIONS Q14).
+python3 - <<EOF
+import hashlib, hmac, json, urllib.request
+body = json.dumps({
+    "event_id": "evt-smoke-1",
+    "event_type": "charge_succeeded",
+    "provider_transaction_id": "$TXN",
+    "amount": "100",
+    "currency": "KGS",
+}).encode()
+sig = hmac.new(b"fake-signing-token", body, hashlib.sha256).hexdigest()
+req = urllib.request.Request(
+    "http://localhost:8765/api/webhooks/payments/freedom-pay",
+    data=body,
+    headers={"X-Signature": sig, "Content-Type": "application/json"},
+    method="POST",
+)
+print(urllib.request.urlopen(req).read().decode())
+EOF
+# → {"status":"applied","event_id":"evt-smoke-1"}
+
+# 3. SMS log + Payment + (later) Delivery rows in MySQL.
+make shell-mysql -- -e "
+SELECT order_number, payment_status FROM orders WHERE order_number='$ORDER_NO';
+SELECT provider, status, paid_at IS NOT NULL AS paid FROM payments WHERE provider_transaction_id='$TXN';
+SELECT phone, purpose, status FROM sms_log ORDER BY id DESC LIMIT 5;
+"
+
+# 4. Replay the same webhook — should be a duplicate (Redis SETNX).
+python3 - <<EOF
+# (same script as step 2)
+EOF
+# → {"status":"duplicate","event_id":"evt-smoke-1"}
+
+make test                # 457 tests pass (428 prior + 29 new in Phase 10)
+make lint && make type   # both clean
+```
+
+> **Production note:** the smoke recipe uses the **fake** SMS / payment
+> / storage clients (the configured defaults when no provider creds are
+> set). Switching `sms_provider=nikita` / `payment_provider=freedom_pay`
+> raises `NotImplementedError` until vendor docs are obtained — see
+> `OPEN_QUESTIONS.md` Q13/Q14/Q15.
 
 ## Bulk-import CSV column contract (Phase 5)
 

@@ -28,6 +28,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import (
@@ -36,7 +37,9 @@ from app.core.errors import (
     PermissionDeniedError,
     ValidationError,
 )
+from app.core.i18n import t as translate
 from app.core.types import uuid7
+from app.domain.deliveries.repositories import DeliveryRepository
 from app.domain.identity.models import AdminUser
 from app.domain.inventory.models import (
     MovementType,
@@ -61,6 +64,8 @@ from app.domain.orders.repositories import (
     OrderRepository,
     OrderStatusHistoryRepository,
 )
+from app.integrations.payments.base import PaymentClient
+from app.integrations.sms.base import SmsMessage, SmsQueue
 
 # ─── Role constants ──────────────────────────────────────────────────────────
 
@@ -129,14 +134,40 @@ async def _record_courier(
     actor: AdminUser,
     ctx: HookContext,
 ) -> None:
-    """Stash courier name + phone on the order (Phase 9 inline; Phase
-    10 will move these to a ``deliveries`` row)."""
+    """Stash courier name + phone inline on the order (denormalised
+    cache; Phase 10's ``deliveries`` row is the canonical record).
+    """
     courier_name = ctx.get("courier_name")
     courier_phone = ctx.get("courier_phone")
     if not courier_name or not courier_phone:
         raise ValidationError(code="courier_info_required")
     order.courier_name = courier_name
     order.courier_phone = courier_phone
+
+
+async def _create_delivery_row(
+    svc: OrderLifecycleService,
+    order: Order,
+    actor: AdminUser,
+    ctx: HookContext,
+) -> None:
+    """Insert one ``deliveries`` row per order at dispatch time
+    (PHARMACY §7.7). Defaults ``provider='in_house'``; provider-managed
+    couriers (Yandex etc.) come in Phase 2.
+    """
+    if svc.deliveries is None:
+        return  # Caller didn't wire the repo (older test setup); skip silently.
+    courier_name = ctx.get("courier_name")
+    courier_phone = ctx.get("courier_phone")
+    now = datetime.now(tz=UTC).replace(tzinfo=None)
+    await svc.deliveries.create_for_order(
+        order_id=order.id,
+        provider=ctx.get("delivery_provider", "in_house"),
+        courier_name=courier_name,
+        courier_phone=courier_phone,
+        tracking_number=ctx.get("tracking_number"),
+        assigned_at=now,
+    )
 
 
 async def _create_refund_payment_row(
@@ -146,9 +177,8 @@ async def _create_refund_payment_row(
     ctx: HookContext,
 ) -> None:
     """COD refund = status flip only (no money to return). Card refund
-    = create a pending ``Payment`` row with ``is_refund=True``; admin
-    completes via gateway dashboard at MVP, Phase 10 wires the real
-    refund call.
+    = call the gateway, then create a pending ``Payment`` row with
+    ``is_refund=True``; the webhook flips it to ``paid``.
     """
     if order.payment_method != PaymentMethod.CARD_ONLINE.value:
         # COD path: nothing to do — order.payment_status flip is enough.
@@ -161,10 +191,34 @@ async def _create_refund_payment_row(
             amount=str(amount) if amount is not None else None,
             order_total=str(order.total),
         )
+
+    # Find the original successful charge so we can ask the gateway to
+    # refund it (we need the provider_transaction_id from that row).
+    original_charge_stmt = (
+        select(Payment)
+        .where(
+            Payment.order_id == order.id,
+            Payment.is_refund == False,  # noqa: E712 — SQL boolean compare
+            Payment.status == PaymentStatus.PAID.value,
+        )
+        .order_by(Payment.created_at.desc())
+    )
+    original = (await svc.session.execute(original_charge_stmt)).scalars().first()
+
+    refund_id: str | None = None
+    if svc.payment_client is not None and original is not None and original.provider_transaction_id:
+        result = await svc.payment_client.refund(
+            provider_transaction_id=original.provider_transaction_id,
+            amount=amount,
+            reason=ctx.get("reason"),
+        )
+        refund_id = result.refund_id
+
     refund = Payment(
         id=uuid7(),
         order_id=order.id,
-        provider="freedom_pay",  # MVP single gateway
+        provider=original.provider if original else "freedom_pay",
+        provider_transaction_id=refund_id,
         amount=amount,
         currency=order.currency,
         status=PaymentStatus.PENDING.value,
@@ -201,7 +255,7 @@ ALLOWED_TRANSITIONS: dict[tuple[str, str], TransitionRule] = {
     ),
     ("preparing", "out_for_delivery"): TransitionRule(
         allowed_roles=_PHARMACY_ROLES,
-        on_success=(_record_courier, _convert_reservation_to_sold),
+        on_success=(_record_courier, _create_delivery_row, _convert_reservation_to_sold),
     ),
     ("ready_for_pickup", "delivered"): TransitionRule(
         allowed_roles=_PHARMACY_ROLES,
@@ -253,6 +307,20 @@ CANCEL_REASONS = frozenset(
 )
 
 
+# ─── Customer-facing SMS templates per transition (PRODUCT §14.2, §21.3) ─────
+
+
+SMS_TEMPLATE_FOR_STATUS: dict[str, str] = {
+    OrderStatus.CONFIRMED.value: "sms.order_confirmed",
+    OrderStatus.OUT_FOR_DELIVERY.value: "sms.order_dispatched",
+    OrderStatus.DELIVERED.value: "sms.order_delivered",
+    OrderStatus.CANCELLED.value: "sms.order_cancelled",
+}
+"""Status → i18n template key. Statuses absent from the map don't
+notify the customer (e.g. internal ``preparing`` and
+``ready_for_pickup`` are admin states only)."""
+
+
 # ─── The service ─────────────────────────────────────────────────────────────
 
 
@@ -270,6 +338,10 @@ class OrderLifecycleService:
         movements: StockMovementRepository,
         inventory: InventoryService,
         audit: AdminAuditLogService,
+        sms_queue: SmsQueue | None = None,
+        deliveries: DeliveryRepository | None = None,
+        payment_client: PaymentClient | None = None,
+        support_phone: str = "+996700111111",
     ) -> None:
         self.session = session
         self.orders = orders
@@ -279,6 +351,10 @@ class OrderLifecycleService:
         self.movements = movements
         self.inventory = inventory
         self.audit = audit
+        self.sms_queue = sms_queue
+        self.deliveries = deliveries
+        self.payment_client = payment_client
+        self.support_phone = support_phone
 
     # ─── Generic dispatcher ────────────────────────────────────────────────
 
@@ -377,7 +453,47 @@ class OrderLifecycleService:
             user_agent=user_agent,
         )
         await self.session.flush()
+
+        # Customer-facing SMS (PRODUCT §14.2). Enqueued inline after
+        # the audit row; for FakeSmsQueue this writes one ``sms_log``
+        # row best-effort. See DECISION_LOG: Phase 12 hardens this with
+        # a true after-commit hook once ARQ is wired.
+        await self._maybe_enqueue_status_sms(order, to_status, reason)
         return order
+
+    async def _maybe_enqueue_status_sms(
+        self,
+        order: Order,
+        to_status: str,
+        reason: str | None,
+    ) -> None:
+        if self.sms_queue is None:
+            return
+        template_key = SMS_TEMPLATE_FOR_STATUS.get(to_status)
+        if template_key is None:
+            return
+        # Use recipient_phone — always populated, works for guest +
+        # account orders alike. The PRODUCT §14.2 split (account-phone
+        # for status updates, recipient-phone only for out-for-delivery)
+        # is a Phase 12 refinement that requires a User join.
+        if not order.recipient_phone:
+            return
+        body = translate(
+            template_key,
+            "ru",  # MVP: SMS in RU only; Phase 12 reads order.user.preferred_language.
+            order_no=order.order_number,
+            courier_name=order.courier_name or "",
+            courier_phone=order.courier_phone or "",
+            reason=reason or "",
+            support_phone=self.support_phone,
+        )
+        await self.sms_queue.enqueue(
+            SmsMessage(
+                phone=order.recipient_phone,
+                body=body,
+                purpose=template_key.removeprefix("sms."),
+            )
+        )
 
     # ─── Public lifecycle methods (thin wrappers around dispatch) ──────────
 

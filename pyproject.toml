@@ -100,6 +100,8 @@ module = [
     "phonenumbers.*",
     "factory.*",
     "freezegun.*",
+    "boto3.*",
+    "botocore.*",
 ]
 ignore_missing_imports = true
 

@@ -40,6 +40,7 @@ from app.api.errors import register_exception_handlers
 from app.api.health import router as health_router
 from app.api.middleware import AccessLogMiddleware, RequestIdMiddleware
 from app.api.v1.router import router as v1_router
+from app.api.webhooks.freedom_pay import router as freedom_pay_webhook_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.redis import close_redis, init_redis
@@ -108,6 +109,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(v1_router)
     app.include_router(admin_v1_router)
+    app.include_router(freedom_pay_webhook_router, prefix="/api")
 
     # Global exception handlers (RFC 7807)
     register_exception_handlers(app)
