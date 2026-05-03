@@ -44,6 +44,7 @@ class FakePaymentClient:
         self.signing_token = signing_token
         self.intents: list[dict[str, Any]] = []
         self.refunds: list[dict[str, Any]] = []
+        self._pending_outcomes: dict[str, ParsedEvent] = {}
 
     async def create_intent(
         self,
@@ -103,6 +104,28 @@ class FakePaymentClient:
             refund_id=refund_id,
             raw={"provider": self.provider, "ok": True},
         )
+
+    async def verify_status(
+        self,
+        *,
+        provider_transaction_id: str,
+    ) -> ParsedEvent | None:
+        """Test-controllable: returns the event configured via
+        :meth:`set_pending_outcome`, or ``None`` if no outcome was
+        registered (the gateway "doesn't know yet")."""
+        return self._pending_outcomes.get(provider_transaction_id)
+
+    def set_pending_outcome(
+        self,
+        provider_transaction_id: str,
+        event: ParsedEvent | None,
+    ) -> None:
+        """Test helper — register what :meth:`verify_status` returns
+        for a given transaction id."""
+        if event is None:
+            self._pending_outcomes.pop(provider_transaction_id, None)
+        else:
+            self._pending_outcomes[provider_transaction_id] = event
 
     async def verify_webhook(
         self,

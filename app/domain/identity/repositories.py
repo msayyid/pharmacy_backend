@@ -180,6 +180,22 @@ class OtpRepository:
         otp.consumed_at = utcnow()
         await self.session.flush()
 
+    async def delete_older_than(self, threshold: datetime) -> int:
+        """Hard-delete every OTP row created before ``threshold``.
+
+        Used by the daily ``cleanup_otps`` scheduled job (PHARMACY §18).
+        Returns the number of rows deleted.
+        """
+        from sqlalchemy import delete
+
+        stmt = delete(OtpCode).where(OtpCode.created_at < threshold)
+        result = await self.session.execute(stmt)
+        await self.session.flush()
+        # ``CursorResult.rowcount`` is correctly typed; the high-level
+        # ``Result`` typeshed alias hides it. The execute return type is
+        # ``CursorResult`` for DML but the static type doesn't reflect that.
+        return int(getattr(result, "rowcount", 0) or 0)
+
 
 # ─── AdminUserRepository ──────────────────────────────────────────────────────
 

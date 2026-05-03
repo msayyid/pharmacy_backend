@@ -13,6 +13,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project initialised; specs and master plan in place.
 - `BUILD_PLAN.md`, `BUILD_PROGRESS.md`, `OPEN_QUESTIONS.md` (12 substantive items), `RISKS.md` (top-10 ranked + watching list), `DECISION_LOG.md` template, this file.
 
+#### Phase 11 — Background Jobs (ARQ) & Scheduled Tasks (2026-05-03) — complete
+
+- **Worker plumbing**: `WorkerSettings.functions` registers `send_sms` (shipped Phase 10), `process_image_upload`, `process_product_import`. `cron_jobs` registers 8 schedules with KG→UTC mapping comments per line. `on_startup` reconfigures structlog inside the worker process. ARQ pool created at API lifespan startup, stashed on `app.state.arq_pool`, closed on shutdown via `pool.aclose()`. New `ArqPoolDep = Annotated[ArqRedis, Depends(get_arq_pool)]` for routes that enqueue work.
+- **`app/workers/scheduled.py`** — 8 cron-driven functions (BACKEND §17.3 pattern: open own session, idempotent, structured-log result):
+    - `near_expiry_report` (06:00 KG / 00:00 UTC) — per-branch list of batches expiring within 60d; cached to Redis at `v1:report:near_expiry:<date>:<branch_id>` (36h TTL) so admin UI can poll instead of waiting on email (Q4 deferred).
+    - `low_stock_report` (06:10 KG / 00:10 UTC) — same pattern via `InventoryService.list_low_stock`.
+    - `expire_batches` (02:00 KG / 20:00 UTC prev-day) — for each branch + every batch with `expiry_date <= today AND quantity_remaining > 0`: insert `stock_movements(type='expired', quantity_change=-N, quantity_after=0)`, set `quantity_remaining=0`, then `reconcile_branch_product` for each (branch, product) touched. `with_for_update(skip_locked=True)` lets multiple workers safely co-process.
+    - `reconcile_stock_cache` (03:00 KG / 21:00 UTC prev-day) — walks every BranchProduct, recomputes the cached `total_quantity`, logs drift on mismatch.
+    - `cleanup_otps` (04:00 KG / 22:00 UTC prev-day) — `OtpRepository.delete_older_than(now - 7d)`.
+    - `cleanup_carts` (04:10 KG / 22:10 UTC prev-day) — `CartRepository.delete_expired(now)` (Phase 8 helper).
+    - `release_pending_orders` (every 5 min) — `OrderRepository.list_pending_for_timeout(now, card=30min, default=24h)` returns IDs locked via `FOR UPDATE SKIP LOCKED`; for each, `OrderLifecycleService.cancel_by_admin(reason='payment_failed' | 'auto_timeout_unconfirmed')` so the same status_history + audit + SMS hooks fire as a manual cancel. The system actor is the first super_admin row (test seed).
+    - `payment_reconcile` (every 5 min, offset 2 min) — for every `payments` row `status='pending' AND is_refund=false AND created_at < now-5min AND provider_transaction_id IS NOT NULL`: call `payment_client.verify_status(provider_transaction_id)`. If the gateway returns a definitive event, run `PaymentService.handle_webhook` with that synthesized event. `NotImplementedError` from the FreedomPay scaffold is caught + counted as `skipped`.
+- **`app/workers/images.py:process_image_upload`** — opens session, re-loads `AdminUser` by `actor_id`, calls `ProductImageService.upload(...)` (already does Pillow + `StorageClient.upload`), removes the temp file. The route swap (return 202 + job_id instead of inline-process) is Phase 12.
+- **`app/workers/imports.py:process_product_import`** — opens session, runs `ProductImportService.apply` with `WORKER_MAX_ROWS=10_000` (worker-only cap; the inline endpoint stays at 500). Streams progress to a Redis hash `v1:import:<import_id>` (`status` / `processed` / `total` / `n_create` / `n_update` / `n_skip` / `errors_json`) with a 24h TTL. The route swap (return 413 ``use_worker`` for >500-row uploads) is Phase 12.
+- **`app/workers/run_once.py`** — CLI helper `python -m app.workers.run_once <job_name>`. Force-runs any cron-style job once (no Redis polling). On-demand jobs (`send_sms` / `process_image_upload` / `process_product_import`) refuse since their kwargs come from a route. Wrapped in `make worker-once JOB=<name>`.
+- **`PaymentClient.verify_status`** added to the Protocol; `FakePaymentClient` implements it via a test-controllable `set_pending_outcome(provider_transaction_id, event)` map; `FreedomPayClient` raises `NotImplementedError("OPEN_QUESTIONS Q14")` (production deploy still blocked on vendor docs).
+- **Repository helpers added**:
+    - `OrderRepository.list_pending_for_timeout(now, card_threshold_minutes, default_threshold_hours, limit)` — `FOR UPDATE SKIP LOCKED` query for the timeout cron.
+    - `OtpRepository.delete_older_than(threshold)` — bulk delete for cleanup_otps.
+- **`StockMovement.quantity_after`** is non-null in the schema; `expire_batches` sets it to 0 (the batch is empty after the row writes).
+- **Cron timezone discipline (DECISION_LOG'd)**: `KG_TO_UTC_HOUR_MAPPING` mirrors `WorkerSettings.cron_jobs`. The Phase 11 audit test reads both and asserts equivalence — adding a new cron without updating the mapping (or vice versa) fails CI loudly. Asia/Bishkek is UTC+6, no DST.
+- **`worker_session_scope` test fixture** (`tests/conftest.py`) — monkey-patches `session_scope` in `app.core.db` AND every worker module that did `from app.core.db import session_scope` at import time (lazy ref capture). Per-test NullPool engine binds to the function-scoped pytest-asyncio loop, dodging "Future attached to a different loop" the worker would otherwise hit on the second test in.
+- **11 new tests (468 total)**:
+    - Unit (with `worker_session_scope` + fakes): `test_worker_send_sms.py` (3 — happy path + provider-error mark-failed + unknown sms_log_id no-crash); `test_worker_scheduled.py` (6 — expire_batches marks expired only; cleanup_otps deletes >7d rows; cleanup_carts deletes expired; release_pending_orders cancels card past 30min with reason=payment_failed; payment_reconcile flips pending→paid via gateway-says-paid; payment_reconcile skips fresh pending).
+    - Integration: `test_arq_round_trip.py` (2 — every registered cron's UTC hour matches `KG_TO_UTC_HOUR_MAPPING`; ARQ pool boots cleanly under the lifespan and is reachable on `app.state.arq_pool`).
+- **Resolved OPEN_QUESTIONS**: Q11 (reservation timeout cron cadence) — single 5-min cron handles both 24h-pending and 30min-card thresholds in one query.
+- 468 tests pass; mypy --strict + ruff clean across 118 source files.
+
 #### Phase 10 — Integrations: SMS, Payments, Storage (2026-05-03) — complete (scaffold-only real adapters)
 
 **Pre-work:** the three research sub-agents (Nikita / Freedom Pay / R2) ran with `WebSearch` and `WebFetch` denied. Rather than ship adapters built from training-era memory (especially the silent-fail-prone Freedom Pay signature), real adapters are scaffolded with `NotImplementedError` bodies pending vendor-doc verification. `OPEN_QUESTIONS.md` Q13/Q14/Q15 block Phase 12 (production readiness) on this.

@@ -107,6 +107,34 @@ def get_redis_dep() -> Redis:
 RedisDep = Annotated[Redis, Depends(get_redis_dep)]
 
 
+# ─── ARQ pool (Phase 11) ─────────────────────────────────────────────────────
+#
+# A single ``ArqRedis`` pool per app process — created at lifespan startup
+# in :func:`app.main.lifespan`, stashed on ``app.state.arq_pool``, closed at
+# shutdown. Routes that enqueue work pull it via :func:`get_arq_pool`.
+
+from arq import ArqRedis  # noqa: E402  — circular-safe; arq is a leaf dep
+from fastapi import Request  # noqa: E402
+
+
+def get_arq_pool(request: Request) -> ArqRedis:
+    """FastAPI dependency — return the ARQ pool from ``app.state``.
+
+    Raises a 500-shaped ``RuntimeError`` if the pool wasn't initialised
+    (lifespan didn't run, or the worker is being driven outside the API).
+    """
+    pool: ArqRedis | None = getattr(request.app.state, "arq_pool", None)
+    if pool is None:
+        raise RuntimeError(
+            "ARQ pool not initialised — lifespan startup did not run, "
+            "or get_arq_pool was called outside an HTTP request."
+        )
+    return pool
+
+
+ArqPoolDep = Annotated[ArqRedis, Depends(get_arq_pool)]
+
+
 # ─── Storefront branch resolver ──────────────────────────────────────────────
 
 

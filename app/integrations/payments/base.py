@@ -100,3 +100,17 @@ class PaymentClient(Protocol):
         body: bytes,
         signature: str | None,
     ) -> ParsedEvent: ...
+
+    async def verify_status(
+        self,
+        *,
+        provider_transaction_id: str,
+    ) -> ParsedEvent | None:
+        """Look up the gateway-side status for a transaction.
+
+        Used by the hourly :func:`payment_reconcile` worker to catch
+        webhooks that never arrived. Returns a :class:`ParsedEvent` if
+        the gateway has a definitive answer (paid / failed); ``None``
+        if the transaction is still pending or unknown.
+        """
+        ...

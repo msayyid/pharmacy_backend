@@ -22,6 +22,10 @@ dev: docker-up  ## Bring up infra + run API with hot reload on :8000
 worker:  ## Run ARQ worker (Phase 11+)
 	uv run arq app.workers.settings.WorkerSettings
 
+worker-once:  ## Force-run a single scheduled job by name. Usage: make worker-once JOB=expire_batches
+	@if [ -z "$(JOB)" ]; then echo "Usage: make worker-once JOB=<name>"; exit 1; fi
+	uv run python -m app.workers.run_once $(JOB)
+
 # ─── Quality ──────────────────────────────────────────────────────────────────
 lint:  ## ruff check + format check
 	uv run ruff check app tests

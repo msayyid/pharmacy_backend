@@ -106,13 +106,10 @@
 
 ---
 
-## Q11 — Reservation timeout cron cadence
+## Q11 — Reservation timeout cron cadence *(resolved 2026-05-03 in Phase 11)*
 
-- **Where it surfaced:** `PRODUCT §10.6` (24h for unconfirmed pending; 30 min for card-payment timeout); `BACKEND §17.2` shows `release_pending_orders` as `cron(..., minute=0)` — hourly.
-- **Why it matters:** Hourly cadence misses the 30-min card timeout by up to 1 hour. Stock stays reserved unnecessarily.
-- **Proposed default:** Single ARQ cron job runs every 5 minutes. Inside, evaluate two predicates: `pending && payment_method='card_online' && placed_at < now-30min` → cancel + release; `pending && placed_at < now-24h` → cancel + release. 5-min granularity is responsive for both thresholds, low load (~12 runs/hour against `orders WHERE status='pending'` index), and idempotent.
-- **Decider:** Backend tech lead at Phase 11.
-- **Blocks:** Phase 11.
+- **Resolution:** Adopted the proposed default. Single 5-min ARQ cron `release_pending_orders` evaluates both predicates in one query (`OrderRepository.list_pending_for_timeout` with `FOR UPDATE SKIP LOCKED`). Cancel goes through `OrderLifecycleService.cancel_by_admin` so all hooks (status_history + audit + SMS) fire identically to a manual cancel.
+- **See:** DECISION_LOG `2026-05-03 — Single 5-min ARQ cron handles both reservation-timeout thresholds (resolves OPEN_QUESTIONS Q11)`.
 
 ---
 

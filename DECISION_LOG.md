@@ -960,3 +960,51 @@ Symptoms: substitutes excluded the source product's id but matched it (wrong-dir
 **Trade-offs:** The `FakeStorageClient.sign_url` returns a non-cryptographic marker — anyone reading the test code knows it's not real. Phase 12 must implement signing in `R2StorageClient.sign_url` AND add a real test that verifies the presigned URL parses + has the correct expiry.
 **Reversibility:** Trivial — flip one boolean per upload call.
 **References:** `app/integrations/storage/base.py`; `app/integrations/storage/fake.py`; `app/integrations/storage/r2.py`; BACKEND §19.
+
+---
+
+### 2026-05-03 — Cron timezone discipline: UTC schedule + KG-time inline comments + audit test
+**Phase:** 11
+**Context:** ARQ cron uses UTC. Asia/Bishkek is UTC+6, no DST. Every spec reference uses KG-local time (e.g., "near-expiry report at 06:00"). Translating each KG hour to a UTC hour by hand is silent-fail-prone — getting one off by 6 silently breaks ops, and the failure mode (the cron just runs at the wrong time of day) is hard to spot until a user complains. CLAUDE.md sacred-invariant area.
+**Decision:** Three-layer protection: (a) every `cron(...)` line in `WorkerSettings.cron_jobs` carries an inline comment with the KG-local time + UTC math (e.g., `# 06:00 KG = 00:00 UTC — daily near-expiry report.`); (b) `KG_TO_UTC_HOUR_MAPPING: dict[str, tuple[int, int|set[int]]]` lives next to the cron list as a structured mirror; (c) `tests/integration/test_arq_round_trip.py::test_every_registered_cron_matches_documented_kg_mapping` reads both and asserts they agree — adding one without the other fails CI loudly.
+**Alternatives considered:** Run the worker container in Asia/Bishkek `TZ` instead of UTC. Rejected: ARQ's cron honours UTC regardless of process TZ; setting TZ would mislead developers reading the schedule. A separate `CRON_SCHEDULE_KG.md` doc — drift-prone vs an enforced test.
+**Rationale:** The audit test is the load-bearing piece; the comment + mirror dict are documentation. None of the three alone is sufficient.
+**Trade-offs:** Adding a cron is two edits + the test reminds you. Acceptable.
+**Reversibility:** Easy.
+**References:** `app/workers/settings.py:KG_TO_UTC_HOUR_MAPPING`, `:cron_jobs`; `tests/integration/test_arq_round_trip.py`.
+
+---
+
+### 2026-05-03 — Single 5-min ARQ cron handles both reservation-timeout thresholds (resolves OPEN_QUESTIONS Q11)
+**Phase:** 11
+**Context:** PRODUCT §10.6 specifies two reservation-timeout thresholds: 24 hours for any pending order, 30 minutes for card-online orders awaiting gateway confirmation. BACKEND §17.2 sketched `release_pending_orders` as hourly — but hourly misses the 30-min threshold by up to one hour. OPEN_QUESTIONS Q11 surfaced the gap with a proposed default of "single 5-min cron evaluating both predicates".
+**Decision:** Adopt the proposed default. One ARQ cron `release_pending_orders` runs every 5 minutes; the underlying `OrderRepository.list_pending_for_timeout(now, card_threshold_minutes=30, default_threshold_hours=24)` query uses an `OR` over both predicates with `FOR UPDATE SKIP LOCKED` so multiple workers can co-process safely. Cancellation flows through `OrderLifecycleService.cancel_by_admin(reason='payment_failed' if card else 'auto_timeout_unconfirmed')` so the same status_history + audit + SMS hooks fire as a manual cancel.
+**Alternatives considered:** (a) Two separate crons (hourly for 24h, every-5-min for 30min) — wasted query traffic for a tiny edge case (a query hitting `WHERE status='pending' AND placed_at < ...` is cheap; doing it 12×/hour vs 24×/day is a rounding error). (b) Per-order ARQ deferred jobs at place-order time, scheduled for `placed_at + threshold` — clever but adds bookkeeping (cancel the deferred job if the order is confirmed by hand) for no payoff at MVP scale.
+**Rationale:** Single cron + composite query is the simplest design that meets both thresholds. 5-min granularity is responsive (worst case: card customer waits 5 min past the 30-min cutoff before stock releases — acceptable). 12 runs/hour against an indexed predicate is negligible load.
+**Trade-offs:** Slightly more complex SQL than two single-predicate queries. Worth it for one cron entry instead of two.
+**Reversibility:** Easy — split into two crons if the load profile changes.
+**References:** `app/workers/scheduled.py:release_pending_orders`; `app/domain/orders/repositories.py:list_pending_for_timeout`; `OPEN_QUESTIONS.md` Q11 (resolved); PRODUCT §10.6.
+
+---
+
+### 2026-05-03 — Single ARQ queue, max_jobs=10, no priority lanes for MVP
+**Phase:** 11
+**Context:** ARQ supports multi-queue routing and per-queue concurrency. The Phase 11 jobs span very different shapes: send_sms (sub-second), process_image_upload (1–5 sec), process_product_import (minutes for 5k-row files), the daily reports (seconds, 06:00 only). A noisy import could in principle starve OTP SMS during the few minutes it runs.
+**Decision:** Single queue (the ARQ default), `max_jobs=10` per BACKEND §17.2 default. Document the trade-off; revisit if production traffic reveals a starvation problem.
+**Alternatives considered:** Two queues — `fast` for SMS + email, `slow` for imports + reports. Reasonable but adds infra complexity (worker container per queue, separate ARQ instances) for a problem we don't have at MVP scale (~10s of SMS/min, imports <1×/day).
+**Rationale:** YAGNI. The number of moving parts in Phase 11 is already substantial; adding multi-queue routing without a measured starvation event is premature optimisation.
+**Trade-offs:** A simultaneous large import + OTP burst could delay SMS by tens of seconds. Acceptable: OTP SMS is rate-limited per-phone (Phase 4) anyway, so the burst-rate ceiling is low.
+**Reversibility:** Easy — split into named queues; deploy a second worker container.
+**References:** `app/workers/settings.py:WorkerSettings`; BACKEND §17.2.
+
+---
+
+### 2026-05-03 — Email integration deferred entirely to Phase 12; reports cache to Redis instead
+**Phase:** 11
+**Context:** PRODUCT §14.4 mentions "daily near-expiry / low-stock email to branch manager" + "daily sales summary email to super admin". Q4 (Phase 0 OPEN_QUESTIONS) proposed that email is non-blocking for launch — receipts can be a Phase-2 PDF, status updates ride on SMS. But Phase 11's `near_expiry_report` and `low_stock_report` jobs need *some* sink so the admin sees the output.
+**Decision:** Skip the email job entirely for Phase 11. The two daily report jobs run, log a structured event, and **cache the rendered payload to Redis** at `v1:report:<name>:<date>:<branch_id>` (36-hour TTL, JSON body of `{branch_id, date, rows: [...]}`). Admin UI can poll the cache key from the existing Phase 9 admin reports endpoints; or, if email lands in Phase 12, the email job reads the same cache key.
+**Alternatives considered:** Stand up `aiosmtplib` or a transactional-email-service adapter now. Rejected — without vendor selection (Mailgun? SES? Postmark? Nikita-bundled?) the adapter would be guesswork, same shape as the Phase 10 SMS / payment scaffolds. Better to defer than to scaffold yet another `NotImplementedError`.
+**Rationale:** Reports are still produced, still observable (structured logs + Redis cache), still consumable via admin UI; only the push channel is missing. Adding the channel later is a thin job that reads the existing cache.
+**Trade-offs:** Branch managers don't get a 06:00 inbox ping until Phase 12. Acceptable — admin login covers the workflow at MVP scale.
+**Reversibility:** Easy — Phase 12 wires `send_email` job that reads the Redis key + sends.
+**References:** `app/workers/scheduled.py:near_expiry_report`, `:low_stock_report`, `:_cache_report`; `OPEN_QUESTIONS.md` Q4 (default).

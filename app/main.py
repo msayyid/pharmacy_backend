@@ -54,12 +54,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     Order matters: configure logging first so subsequent steps emit
     structured JSON; init Redis next so any startup-side cache reads
-    work; init Sentry last (it depends on neither, and we want errors
-    in earlier steps to surface as plain logs).
+    work; init the ARQ pool over Redis; init Sentry last (it depends
+    on neither, and we want errors in earlier steps to surface as
+    plain logs).
     """
     settings = get_settings()
     configure_logging(settings)
     await init_redis(settings)
+
+    # ARQ pool — one per app process, used by routes that enqueue work.
+    from arq import create_pool
+    from arq.connections import RedisSettings
+
+    _app.state.arq_pool = await create_pool(RedisSettings.from_dsn(str(settings.redis_dsn)))
 
     # Sentry — dsn=None makes init a no-op (per Sentry SDK contract).
     dsn = settings.sentry_dsn.get_secret_value() if settings.sentry_dsn else None
@@ -75,8 +82,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        await close_redis()
-        log.info("shutdown_complete")
+        try:
+            pool = getattr(_app.state, "arq_pool", None)
+            if pool is not None:
+                await pool.aclose()
+        finally:
+            await close_redis()
+            log.info("shutdown_complete")
 
 
 def create_app() -> FastAPI:

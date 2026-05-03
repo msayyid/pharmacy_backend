@@ -128,6 +128,21 @@ class FreedomPayClient:
             "FreedomPayClient.verify_webhook is unverified scaffold — see " "OPEN_QUESTIONS Q14."
         )
 
+    async def verify_status(
+        self,
+        *,
+        provider_transaction_id: str,
+    ) -> ParsedEvent | None:
+        """SCAFFOLD — see OPEN_QUESTIONS Q14.
+
+        Used by the hourly :func:`payment_reconcile` worker. The
+        production body must call Freedom Pay's status-lookup endpoint
+        and translate the response to a :class:`ParsedEvent`.
+        """
+        raise NotImplementedError(
+            "FreedomPayClient.verify_status is unverified scaffold — see " "OPEN_QUESTIONS Q14."
+        )
+
     async def aclose(self) -> None:
         await self._http.aclose()
 

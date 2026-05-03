@@ -5,11 +5,11 @@
 
 ## Current state
 
-- **Active phase:** Phase 10 — Integrations: SMS, Payments, Storage _(complete — scaffold-only for the real adapters)_
-- **Status:** **complete** — 457 tests pass; mypy --strict + ruff clean across 114 source files.
+- **Active phase:** Phase 11 — Background Jobs (ARQ) & Scheduled Tasks _(complete)_
+- **Status:** **complete** — 468 tests pass; mypy --strict + ruff clean across 118 source files.
 - **Last session:** 2026-05-03
-- **Sub-phases done:** 10.0 (research blocked — `WebSearch` / `WebFetch` denied; user picked path C: scaffold-only real adapters with `NotImplementedError` bodies + `OPEN_QUESTIONS` Q13/Q14/Q15 blocking Phase 12), 10.1 (`SmsLog` + `Delivery` models + repos + migration `ac097ed3c5aa` round-trips clean — Payment column polish was a no-op since Phase 9 already used `provider_transaction_id` + `failure_reason`), 10.2 (`SmsClient` Protocol next to existing `SmsQueue`; `NikitaSmsClient` scaffold; `FakeSmsClient` records calls + returns deterministic `SendResult`; `factory.get_sms_client()`; `app/workers/sms.py:send_sms` body shipped, ARQ registration deferred to Phase 11; `FakeSmsQueue` extended with optional `session_factory` so it writes one `sms_log` row per enqueue), 10.3 (lifecycle + checkout SMS hooks: `SMS_TEMPLATE_FOR_STATUS` map drives the post-`dispatch()` enqueue; `_create_delivery_row` hook on `(preparing→out_for_delivery)` inserts the `deliveries` row; CheckoutService.place_order enqueues `order_placed`), 10.4 (`PaymentClient` Protocol; `FreedomPayClient` scaffold raising NotImplementedError on every I/O; `FakePaymentClient` with HMAC-SHA256 webhook signing for tests; `payments/factory.py`; `PaymentService` with `record_charge_initiated`, `record_refund_initiated`, idempotent `handle_webhook` via Redis SETNX dedupe), 10.5 (`POST /api/webhooks/payments/freedom-pay` — signature-verified, idempotent; CheckoutService.place_order replaces stub `payment_redirect_url` with `payment_client.create_intent()` + persists pending Payment row; lifecycle.refund's `_create_refund_payment_row` hook now calls `payment_client.refund()` on card orders + stores returned `refund_id`), 10.6 (`StorageClient` Protocol; `R2StorageClient` boto3-built scaffold; `FakeStorageClient` writes to `<tmpdir>/r2-fake/`; `storage/factory.py` defaults to fake when `storage_endpoint` unset; `ProductImageService` swapped from inline disk-write to `storage.upload(...)`), 10.7 (29 new tests: 6 SMS-factory unit + 6 payment-factory unit + 6 storage-factory unit + 5 webhook integration + 3 lifecycle-SMS integration + 1 e2e card-payment-flow walkthrough; sandbox-gated real-adapter tests deliberately not shipped pending vendor verification), 10.8 (hand-off + commit).
-- **Next session should:** start Phase 11 — Background Jobs (ARQ) & Scheduled Tasks. Re-read `BACKEND §17` (ARQ pattern), `PHARMACY §18` (jobs catalogue), `PRODUCT §10.6` (reservation timeout), `PRODUCT §14.5` (SMS quiet hours). Wire the worker entrypoint, register `send_sms` (already shipped in `app/workers/sms.py`), build `process_image_upload`, `process_product_import`, `release_pending_orders`, `payment_reconcile`, `near_expiry_report`, `low_stock_report`, `expire_batches`, `reconcile_stock_cache`, `cleanup_otps`, `cleanup_carts`. ARQ cron schedules per BACKEND §17.2.
+- **Sub-phases done:** 11.1 (`get_arq_pool` DI + lifespan startup/shutdown of `app.state.arq_pool`; `ArqPoolDep`; `make worker-once JOB=<name>` helper), 11.2 (`app/workers/scheduled.py` with all 8 jobs: near_expiry_report / low_stock_report (cache to Redis + log) / expire_batches (writes paired stock_movements + recompute) / reconcile_stock_cache (drift-log) / cleanup_otps (`OtpRepository.delete_older_than`) / cleanup_carts / release_pending_orders (uses `OrderLifecycleService.cancel_by_admin`; `OrderRepository.list_pending_for_timeout` does the FOR UPDATE SKIP LOCKED query) / payment_reconcile (calls `client.verify_status` then `PaymentService.handle_webhook`)), 11.3 (`app/workers/images.py:process_image_upload` opens session + calls `ProductImageService.upload`; `app/workers/imports.py:process_product_import` with Redis progress hash + `WORKER_MAX_ROWS=10000` cap), 11.4 (added `verify_status` to `PaymentClient` Protocol + `FakePaymentClient` (test-controllable via `set_pending_outcome`) + `FreedomPayClient` scaffold raising NotImplementedError(Q14)), 11.5 (`WorkerSettings` fully populated: 3 functions registered, 8 cron jobs with KG→UTC mapping comments per line; `KG_TO_UTC_HOUR_MAPPING` mirror dict for the audit test), 11.6 (11 new tests: 3 send_sms unit / 6 scheduled-jobs unit / 1 ARQ-pool lifespan / 1 cron-timezone audit — the audit reads `WorkerSettings.cron_jobs` and asserts each registered cron's UTC hour matches the documented mapping; `worker_session_scope` conftest fixture monkey-patches `session_scope` to a per-test NullPool engine to dodge the function-loop / module-engine mismatch that worker functions hit), 11.7 (hand-off + commit).
+- **Next session should:** start Phase 12 — Hardening & Launch Readiness. Re-read `BACKEND §27` (Definition of Done) + `PRODUCT §26` checklists. Final cleanup pass: switch the catalog image-upload route to enqueue `process_image_upload` (currently inline); add the >500-row dispatch on `POST /admin/v1/products/import/apply` to enqueue `process_product_import` and return job_id; OWASP audit; load test; observability gaps (sentry breadcrumbs verification, structlog redaction sweep); verify the BACKEND §27 + PRODUCT §26 launch-readiness checklists pass. Phase 10's `OPEN_QUESTIONS` Q13/Q14/Q15 (vendor docs for Nikita / Freedom Pay / R2) **continue to block** real-adapter production deploy but do NOT block Phase 12 hardening on the fakes side.
 
 ## Phases
 
@@ -24,6 +24,7 @@
 - [x] Phase 8 — Cart, Checkout & Place-Order (FEFO) _(done 2026-05-02)_
 - [x] Phase 9 — Admin Order Lifecycle, Reports & Audit _(done 2026-05-03)_
 - [x] Phase 10 — Integrations: SMS, Payments, Storage _(done 2026-05-03 — scaffold-only real adapters; production-readiness tracked in OPEN_QUESTIONS Q13/Q14/Q15)_
+- [x] Phase 11 — Background Jobs (ARQ) & Scheduled Tasks _(done 2026-05-03)_
 - [ ] Phase 11 — Background Jobs & Scheduled Tasks
 - [ ] Phase 12 — Hardening & Launch Readiness
 
@@ -434,6 +435,63 @@ make lint && make type   # both clean
 > raises `NotImplementedError` until vendor docs are obtained — see
 > `OPEN_QUESTIONS.md` Q13/Q14/Q15.
 
+### After Phase 11 (verified 2026-05-03)
+
+```bash
+make docker-up-test                                    # mysql-test :3307 + redis
+set -a && source .env.test && set +a
+uv run alembic upgrade head                            # 9 migrations
+uv run python -m dev.fixtures.catalog.seed
+uv run python -m dev.fixtures.inventory.seed
+
+# 1. Force-run each scheduled job via the run_once helper.
+make worker-once JOB=expire_batches
+# → expire_batches → {'expired': N, 'reconciled': M}
+
+make worker-once JOB=reconcile_stock_cache
+# → reconcile_stock_cache → {'branch_products': X, 'drift': 0}
+
+make worker-once JOB=near_expiry_report
+# → near_expiry_report → {1: <count>, 2: <count>}
+
+make worker-once JOB=low_stock_report
+make worker-once JOB=cleanup_otps
+make worker-once JOB=cleanup_carts
+make worker-once JOB=release_pending_orders
+make worker-once JOB=payment_reconcile
+
+# 2. Inspect the cached daily-report payload (Redis hash).
+make shell-redis -- "GET v1:report:near_expiry:$(date -u +%Y-%m-%d):1"
+# → JSON document with {branch_id, date, rows: [...]}
+
+# 3. Run the actual ARQ worker process briefly.
+uv run arq app.workers.settings.WorkerSettings &
+sleep 3
+kill %1
+# → "worker_startup" + "worker_shutdown" log lines around the cron
+#    polls. Confirms all functions + crons are registered.
+
+# 4. End-to-end: enqueue send_sms via an OTP request, assert the worker
+#    can handle the job after the route enqueues it.
+uv run uvicorn app.main:app --port 8765 > /tmp/uvicorn.log 2>&1 &
+sleep 1
+curl -s -X POST http://localhost:8765/api/v1/auth/otp/request \
+  -H "Content-Type: application/json" -d '{"phone":"+996700123456"}'
+# → sms_log row created (status='queued') ; SMS delivered via FakeSmsClient
+make shell-mysql -- -e "SELECT phone, purpose, status FROM sms_log ORDER BY id DESC LIMIT 3;"
+
+make test                # 468 tests pass (457 prior + 11 new in Phase 11)
+make lint && make type   # both clean
+```
+
+> **Production note:** real Nikita / Freedom Pay / R2 adapters still
+> raise `NotImplementedError` (Phase 10's scaffold-only path). The
+> worker functions call them through the `verify_status` /
+> `client.send` Protocols, which means flipping `sms_provider=nikita`
+> or `payment_provider=freedom_pay` will surface the
+> `NotImplementedError` at job-execution time. Vendor verification
+> closes OPEN_QUESTIONS Q13/Q14 before production traffic.
+
 ## Bulk-import CSV column contract (Phase 5)
 
 > Locked in Phase 5.3 per `CLAUDE_CODE_PROMPTS` Phase 5 spec. The
@@ -498,9 +556,9 @@ synchronously; ≥ 501 returns 413 ("use the worker — Phase 11").
 
 ## Active blockers
 
-- None for Phase 9.
-- **Resolved through Phase 9:** Q6 (`python-jose` retained — see DECISION_LOG); Q9 (refresh token = JWT-encoded + jti in Redis — implemented); Q1 / Q3 / Q12 implicitly satisfied via Phase 8 place-order rules.
-- **Open questions remaining:** Q5 (filename — cosmetic); Q11 (reservation timeout cron — Phase 11). Q8 (synonym JSON) confirmed.
+- None for Phase 11.
+- **Resolved through Phase 11:** Q6 (Phase 4); Q9 (Phase 4); Q1 / Q3 / Q12 (Phase 8); **Q11 — reservation timeout cron** (Phase 11: a single 5-min ARQ cron checks both 24h-pending and 30min-card thresholds in one pass — DECISION_LOG'd).
+- **Open questions remaining:** Q5 (filename — cosmetic); Q13 / Q14 / Q15 (vendor docs for Nikita / Freedom Pay / R2 — block Phase 12 production deploy). Q8 (synonym JSON) confirmed.
 
 ## In-progress TodoWrite items
 

@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -163,6 +163,48 @@ class OrderRepository:
         total = (await self.session.execute(total_stmt)).scalar_one()
         items = (await self.session.execute(items_stmt)).scalars().all()
         return (items, total)
+
+    async def list_pending_for_timeout(
+        self,
+        *,
+        now: datetime,
+        card_threshold_minutes: int = 30,
+        default_threshold_hours: int = 24,
+        limit: int = 100,
+    ) -> Sequence[Order]:
+        """Return orders past their auto-cancel deadline, locked.
+
+        Predicate matches PRODUCT §10.6:
+        * card-online orders pending > ``card_threshold_minutes`` (default 30 min)
+        * any pending order > ``default_threshold_hours`` (default 24 h)
+
+        ``FOR UPDATE SKIP LOCKED`` makes concurrent workers safe — each
+        worker grabs a disjoint slice; rows held by another worker are
+        skipped this round and picked up next tick.
+        """
+        from datetime import timedelta
+
+        from app.domain.orders.models import OrderStatus, PaymentMethod
+
+        card_cutoff = now - timedelta(minutes=card_threshold_minutes)
+        default_cutoff = now - timedelta(hours=default_threshold_hours)
+        stmt = (
+            select(Order)
+            .where(
+                Order.status == OrderStatus.PENDING.value,
+                or_(
+                    and_(
+                        Order.payment_method == PaymentMethod.CARD_ONLINE.value,
+                        Order.placed_at < card_cutoff,
+                    ),
+                    Order.placed_at < default_cutoff,
+                ),
+            )
+            .order_by(Order.placed_at.asc())
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        return (await self.session.execute(stmt)).scalars().all()
 
 
 class OrderStatusHistoryRepository:

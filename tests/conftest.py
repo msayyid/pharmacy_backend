@@ -123,6 +123,64 @@ def _migrated_db(alembic_config: Config) -> Iterator[None]:
 
 
 @pytest_asyncio.fixture
+async def worker_session_scope(_migrated_db: None) -> AsyncIterator[None]:
+    """Bind ``app.core.db.session_scope`` to a per-test engine.
+
+    Worker functions open their own session via ``session_scope`` →
+    ``SessionLocal`` → ``app.core.db.engine``. The module-level engine
+    binds to the first event loop that touches it; subsequent
+    function-scoped pytest-asyncio loops then hit
+    "Future attached to a different loop" the next test in.
+
+    This fixture builds a fresh ``NullPool`` engine + sessionmaker per
+    test, monkey-patches ``session_scope`` to yield from it, and restores
+    the originals on teardown.
+    """
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from app.core import db as _db
+    from app.core.config import get_settings
+
+    test_engine = create_async_engine(
+        str(get_settings().mysql_dsn),
+        poolclass=NullPool,
+        connect_args={"charset": "utf8mb4"},
+    )
+    test_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def _patched():  # type: ignore[no-untyped-def]
+        async with test_factory() as s:
+            try:
+                yield s
+                await s.commit()
+            except Exception:
+                await s.rollback()
+                raise
+
+    # Worker modules did ``from app.core.db import session_scope`` at
+    # import time, binding the old ref. Patch each binding site too.
+    from app.workers import images as _w_images
+    from app.workers import imports as _w_imports
+    from app.workers import scheduled as _w_scheduled
+    from app.workers import sms as _w_sms
+
+    targets = [_db, _w_sms, _w_scheduled, _w_images, _w_imports]
+    originals = [(m, m.session_scope) for m in targets]
+    for m in targets:
+        m.session_scope = _patched  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        for m, orig in originals:
+            m.session_scope = orig  # type: ignore[assignment]
+        await test_engine.dispose()
+
+
+@pytest_asyncio.fixture
 async def redis_clean() -> AsyncIterator[None]:
     """Per-test Redis: defensive close, init, FLUSHDB, yield, close.
 
