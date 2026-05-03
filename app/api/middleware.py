@@ -17,6 +17,7 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from typing import ClassVar
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -117,12 +118,30 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     HSTS only emits when the request reached us over HTTPS — set via
     ``X-Forwarded-Proto: https`` from the trusted reverse proxy or via the
     ASGI scope's ``scheme``. Behind plain HTTP (dev) we don't claim HSTS.
+
+    The default CSP is the strictest possible (the API serves JSON only —
+    no HTML, no embedded resources). The Swagger UI / ReDoc HTML pages at
+    ``/docs`` and ``/redoc`` are exceptions: FastAPI's default Swagger
+    template loads JS + CSS from a CDN (cdn.jsdelivr.net) plus inline
+    initialiser scripts, so those paths get a relaxed CSP that allows
+    those specific sources. ``/openapi.json`` is plain JSON and stays
+    under the strict default.
     """
 
     HSTS_VALUE = "max-age=31536000; includeSubDomains; preload"
-    # API serves JSON only — no HTML, no embedded resources, so the strictest
-    # policy is the right one. ``frame-ancestors 'none'`` blocks clickjacking.
-    CSP_VALUE = "default-src 'none'; frame-ancestors 'none'"
+    CSP_STRICT = "default-src 'none'; frame-ancestors 'none'"
+    # Swagger UI + ReDoc need scripts/styles/fonts/images from the
+    # FastAPI default CDN (cdn.jsdelivr.net) plus inline init scripts.
+    CSP_DOCS = (
+        "default-src 'none'; "
+        "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+        "style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+        "img-src 'self' data: https://fastapi.tiangolo.com; "
+        "font-src 'self' https://cdn.jsdelivr.net; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'"
+    )
+    DOCS_PATHS: ClassVar[set[str]] = {"/docs", "/docs/", "/redoc", "/redoc/"}
 
     async def dispatch(
         self,
@@ -133,8 +152,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
         if scheme == "https":
             response.headers["Strict-Transport-Security"] = self.HSTS_VALUE
-        response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Content-Security-Policy"] = self.CSP_VALUE
+        # Docs pages need the CDN; everything else gets the strict policy.
+        if request.url.path in self.DOCS_PATHS:
+            response.headers["Content-Security-Policy"] = self.CSP_DOCS
+            # Don't deny iframe on the docs (admins iframe them sometimes
+            # in internal dashboards). Strict everywhere else.
+        else:
+            response.headers["Content-Security-Policy"] = self.CSP_STRICT
+            response.headers["X-Frame-Options"] = "DENY"
         return response

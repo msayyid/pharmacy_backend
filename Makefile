@@ -16,7 +16,12 @@ install:  ## uv sync (incl. dev deps)
 	uv sync
 
 # ─── Run ──────────────────────────────────────────────────────────────────────
-dev: docker-up  ## Bring up infra + run API with hot reload on :8000
+dev: docker-up  ## Bring up Docker infra + run API with hot reload on :8000
+	uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+dev-mamp:  ## Run API against existing MAMP MySQL + Homebrew Redis (no Docker).
+	@redis-cli ping >/dev/null 2>&1 || (echo "Redis not running. Start it: brew services start redis"; exit 1)
+	@nc -z 127.0.0.1 3306 || (echo "MAMP MySQL not reachable on :3306. Start MAMP."; exit 1)
 	uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 worker:  ## Run ARQ worker (Phase 11+)
